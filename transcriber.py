@@ -1,9 +1,11 @@
 import logging
 import os
+import re
 import tempfile
 import struct
 import json
 import wave
+from difflib import SequenceMatcher
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
@@ -22,6 +24,59 @@ SHORT_AUDIO_CTX = "512"
 
 class TranscriptionError(Exception):
     pass
+
+
+def _normalize_for_repeat_check(text):
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def _is_same_text(left, right):
+    left_norm = _normalize_for_repeat_check(left)
+    right_norm = _normalize_for_repeat_check(right)
+    if not left_norm or not right_norm:
+        return False
+
+    ratio = len(left_norm) / len(right_norm)
+    if ratio < 0.7 or ratio > 1.3:
+        return False
+
+    return SequenceMatcher(None, left_norm, right_norm).ratio() >= 0.80
+
+
+def collapse_repeated_transcript(text):
+    """
+    Whisper can occasionally emit the same short dictation twice with tiny wording
+    differences. Collapse only full adjacent repeats; partial repeats are left alone.
+    """
+    if len(text) < 40:
+        return text
+
+    sentences = [s.strip() for s in re.findall(r"[^.!?]+[.!?]*", text) if s.strip()]
+    if len(sentences) >= 2:
+        deduped = []
+        for sentence in sentences:
+            if deduped and _is_same_text(deduped[-1], sentence):
+                continue
+            deduped.append(sentence)
+        if len(deduped) < len(sentences):
+            text = " ".join(deduped).strip()
+            sentences = deduped
+
+        for split in range(1, len(sentences)):
+            left = " ".join(sentences[:split]).strip()
+            right = " ".join(sentences[split:]).strip()
+            if _is_same_text(left, right):
+                return left
+
+    words = text.split()
+    if len(words) >= 8:
+        for split in range(max(4, len(words) // 3), min(len(words) - 3, (len(words) * 2) // 3) + 1):
+            left = " ".join(words[:split]).strip()
+            right = " ".join(words[split:]).strip()
+            if _is_same_text(left, right):
+                return left
+
+    return text
 
 
 def write_wav(audio, wav_path, samplerate=16000):
@@ -116,6 +171,10 @@ class Transcriber:
             resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
             result = json.loads(resp.read().decode())
             text = result.get("text", "").strip()
+            collapsed = collapse_repeated_transcript(text)
+            if len(collapsed) < len(text):
+                logger.info(f"collapsed repeated transcript: {len(text)} -> {len(collapsed)} chars")
+                text = collapsed
 
             if self._is_hallucination(text):
                 return ""
