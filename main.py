@@ -138,45 +138,54 @@ def _claim_job_completion(job_id):
         return False
 
 
-def _watchdog_check():
+def _watchdog_tick():
     """
-    Returns the previous (stuck) state if a reset happened, else None.
-    Mutates state under the lock; the caller cleans up resources OUTSIDE the lock
-    (recorder, overlay) since those calls can block or marshal to the main loop.
+    Single watchdog pass. State mutation AND resource cleanup happen under
+    the same state_lock — releasing the lock between the two creates a
+    window in which on_key_down can start a fresh recording that the
+    cleanup then clobbers (silent failure for the user).
+
+    recorder.stop() is blocking PortAudio I/O. Holding state_lock during
+    it briefly blocks tap-thread callbacks, but the watchdog only fires
+    when something has been stuck for minutes already, so the extra
+    millisecond of lock contention is invisible.
+
+    overlay.hide() is non-blocking — it just queues onto the AppKit main
+    loop via AppHelper.callAfter, so holding the lock during it is free.
     """
     global state, state_ts, current_job_id
     with state_lock:
         elapsed = time.monotonic() - state_ts
+        stuck = None
         if state == "recording" and elapsed > RECORDING_TIMEOUT_SEC:
             log(f"watchdog: stuck in recording for {elapsed:.0f}s, resetting")
             state = "idle"
             state_ts = time.monotonic()
             current_job_id += 1  # invalidate any in-flight worker token
-            return "recording"
-        if state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
+            stuck = "recording"
+        elif state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
             log(f"watchdog: stuck in processing for {elapsed:.0f}s, resetting")
             state = "idle"
             state_ts = time.monotonic()
             current_job_id += 1
-            return "processing"
-        return None
+            stuck = "processing"
+
+        if stuck == "recording":
+            # Drain the in-memory audio buffer; a stuck recording is by
+            # definition not a clean dictation worth saving.
+            try:
+                recorder.stop()
+            except Exception as e:
+                log(f"watchdog recorder.stop error: {e}")
+        if stuck:
+            overlay.hide()
 
 
 def watchdog_loop():
     while True:
         time.sleep(WATCHDOG_POLL_SEC)
         try:
-            stuck = _watchdog_check()
-            if stuck == "recording":
-                # Drain the in-memory audio buffer; we don't try to save it
-                # since a stuck recording is by definition not a clean dictation.
-                try:
-                    recorder.stop()
-                except Exception as e:
-                    log(f"watchdog recorder.stop error: {e}")
-                overlay.hide()
-            elif stuck == "processing":
-                overlay.hide()
+            _watchdog_tick()
         except Exception as e:
             log(f"watchdog loop error: {e}")
 
