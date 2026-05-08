@@ -35,7 +35,7 @@ Same idea — without the subscription. Bring your own free Groq API key, get su
 
 ## What you get
 
-- **Free.** MIT licensed. No accounts, no subscriptions, no telemetry.
+- **Free.** MIT licensed. No OpenSpeaksy account, no subscription, no telemetry — bring your own Groq key (free) and that's it.
 - **Fast.** Groq runs Whisper Large v3 in ~0.2 – 0.5 s for short phrases.
 - **Multilingual.** Auto-detects language. Handles Russian, English, mixed speech well.
 - **Reliable.** Recordings are queued to disk; nothing is lost if Groq is unreachable.
@@ -49,7 +49,7 @@ Pick the path that fits you. Both end up at the same place: a working install in
 
 Sign in at [console.groq.com/keys](https://console.groq.com/keys), click **Create API Key**, and copy the long `gsk_...` string. Free tier, no card required.
 
-### Option A — One-prompt install (recommended for most users)
+### Option A — One-prompt install (recommended if you don't use Terminal)
 
 Open **Claude**, **ChatGPT**, **Cursor**, or any AI coding assistant. Paste this:
 
@@ -167,6 +167,18 @@ tail -f ~/Library/Logs/com.openspeaksy/main.log     # app log, rotated to 6 MB m
 ```
 
 Captures startup, watchdog events, errors, and recovery. Per-transcription text is intentionally never logged — only lengths, paths, and errors.
+
+## Troubleshooting
+
+| Symptom | Likely cause |
+|---|---|
+| Hotkey ignored, nothing happens | Input Monitoring not granted to `venv/bin/python` |
+| Recording works but text doesn't paste | Accessibility not granted to the same binary |
+| No microphone prompt on first try | Microphone permission denied earlier — re-enable in System Settings |
+| Red `!` overlay every time | Groq key invalid, quota exhausted, or no internet — check the log |
+| Hotkey ignored only in some apps (1Password, sudo prompts) | macOS Secure Input is active there; click out and back in |
+
+For specifics, check the [log](#logs).
 
 ## Uninstall
 
