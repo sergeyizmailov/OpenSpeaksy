@@ -255,6 +255,7 @@ def process_pending_recording(path, job_id):
 
     if text:
         if paste_text(text):
+            log(f"pasted {len(text)} chars from {path.name}")
             overlay.hide()
         else:
             overlay.flash_error()
