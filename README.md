@@ -88,10 +88,12 @@ Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Su
 
 ## Configuration
 
+The default install uses **Whisper Large v3** — the only model we recommend. Smaller variants (`medium`, `small`) trade quality for speed and noticeably worse on Russian and mixed RU/EN. `large-v3-turbo` is faster but loses precision on punctuation and proper nouns. Stick with `large-v3` unless you know exactly what you're doing.
+
+To pin a specific upstream whisper.cpp version:
+
 ```bash
-WHISPER_MODEL=large-v3-turbo ./scripts/install.sh   # ~4× faster, marginal quality drop
-WHISPER_MODEL=medium         ./scripts/install.sh   # smaller and faster
-WHISPER_CPP_REF=master       ./scripts/install.sh   # track upstream whisper.cpp HEAD
+WHISPER_CPP_REF=master ./scripts/install.sh   # track upstream HEAD instead of v1.7.5
 ```
 
 Tweak the hotkey, recording threshold, watchdog timeouts, or overlay style by editing `main.py` and `overlay.py` directly. The whole codebase is under 1000 lines.
