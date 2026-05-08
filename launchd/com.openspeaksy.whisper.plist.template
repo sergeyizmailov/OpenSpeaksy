@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.openspeaksy.whisper</string>
+    <key>LimitLoadToSessionType</key>
+    <string>Aqua</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PROJECT_ROOT__/whisper.cpp/build/bin/whisper-server</string>
+        <string>-m</string>
+        <string>__PROJECT_ROOT__/whisper.cpp/models/ggml-__MODEL__.bin</string>
+        <string>-l</string>
+        <string>auto</string>
+        <string>-t</string>
+        <string>4</string>
+        <string>--port</string>
+        <string>8178</string>
+        <string>-nt</string>
+        <string>-bo</string>
+        <string>1</string>
+        <string>-et</string>
+        <string>2.4</string>
+        <string>-sns</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__PROJECT_ROOT__</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/openspeaksy-whisper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/openspeaksy-whisper.log</string>
+</dict>
+</plist>
