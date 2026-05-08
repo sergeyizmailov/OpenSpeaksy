@@ -1,15 +1,12 @@
 import logging
 import os
 import signal
-import sys
 import time
 import threading
 import uuid
 import wave
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from urllib.request import urlopen
-from urllib.error import URLError
 
 from AppKit import NSApplication, NSApplicationActivationPolicyAccessory, NSPasteboard
 from Quartz import (
@@ -28,7 +25,7 @@ from CoreFoundation import (
 from PyObjCTools import AppHelper
 
 from recorder import Recorder
-from transcriber import Transcriber, TranscriptionError, write_wav, WHISPER_SERVER
+from transcriber import Transcriber, TranscriptionError, write_wav, GROQ_API_KEYS
 from overlay import Overlay
 
 # Hotkey configuration. Default is right Command.
@@ -41,15 +38,15 @@ PB_TYPE = "public.utf8-plain-text"
 PENDING_DIR = Path(".pending")
 QUARANTINE_DIR = PENDING_DIR / "quarantine"
 
-# Watchdog: reset state if stuck — recovers from lost key-up events
-# (Secure Input apps, tap glitches, process restart mid-recording)
+# Watchdog: an independent poll thread resets stuck states. Triggers when a
+# key-up is lost (Secure Input app, tap glitch, mid-recording crash) and the
+# state machine would otherwise sit forever with audio buffering in memory.
 RECORDING_TIMEOUT_SEC = 300
 PROCESSING_TIMEOUT_SEC = 180
+WATCHDOG_POLL_SEC = 5
 
 # Long-term observability
 PENDING_AGE_WARN_DAYS = 7
-WHISPER_LOG_PATH = "/tmp/openspeaksy-whisper.log"
-WHISPER_LOG_WARN_BYTES = 50 * 1024 * 1024
 
 
 # Bounded log file: 2 MB × 3 files = 6 MB max ever on disk
@@ -89,20 +86,6 @@ tap_ref = None
 source_ref = None
 
 
-def _watchdog_locked():
-    """Reset stuck states. Caller must hold state_lock."""
-    global state, state_ts
-    elapsed = time.monotonic() - state_ts
-    if state == "recording" and elapsed > RECORDING_TIMEOUT_SEC:
-        log(f"watchdog: stuck in recording for {elapsed:.0f}s, resetting")
-        state = "idle"
-        state_ts = time.monotonic()
-    elif state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
-        log(f"watchdog: stuck in processing for {elapsed:.0f}s, resetting")
-        state = "idle"
-        state_ts = time.monotonic()
-
-
 def set_state(new):
     global state, state_ts
     with state_lock:
@@ -111,10 +94,9 @@ def set_state(new):
 
 
 def cas_state(expected, new):
-    """Atomic compare-and-set with watchdog. Returns True if state was updated."""
+    """Atomic compare-and-set. Returns True if state was updated."""
     global state, state_ts
     with state_lock:
-        _watchdog_locked()
         if state == expected:
             state = new
             state_ts = time.monotonic()
@@ -132,7 +114,6 @@ def begin_processing():
     """
     global state, state_ts, current_job_id
     with state_lock:
-        _watchdog_locked()
         if state != "recording":
             return None
         state = "processing"
@@ -150,12 +131,54 @@ def _claim_job_completion(job_id):
     """
     global state, state_ts
     with state_lock:
-        _watchdog_locked()
         if state == "processing" and current_job_id == job_id:
             state = "idle"
             state_ts = time.monotonic()
             return True
         return False
+
+
+def _watchdog_check():
+    """
+    Returns the previous (stuck) state if a reset happened, else None.
+    Mutates state under the lock; the caller cleans up resources OUTSIDE the lock
+    (recorder, overlay) since those calls can block or marshal to the main loop.
+    """
+    global state, state_ts, current_job_id
+    with state_lock:
+        elapsed = time.monotonic() - state_ts
+        if state == "recording" and elapsed > RECORDING_TIMEOUT_SEC:
+            log(f"watchdog: stuck in recording for {elapsed:.0f}s, resetting")
+            state = "idle"
+            state_ts = time.monotonic()
+            current_job_id += 1  # invalidate any in-flight worker token
+            return "recording"
+        if state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
+            log(f"watchdog: stuck in processing for {elapsed:.0f}s, resetting")
+            state = "idle"
+            state_ts = time.monotonic()
+            current_job_id += 1
+            return "processing"
+        return None
+
+
+def watchdog_loop():
+    while True:
+        time.sleep(WATCHDOG_POLL_SEC)
+        try:
+            stuck = _watchdog_check()
+            if stuck == "recording":
+                # Drain the in-memory audio buffer; we don't try to save it
+                # since a stuck recording is by definition not a clean dictation.
+                try:
+                    recorder.stop()
+                except Exception as e:
+                    log(f"watchdog recorder.stop error: {e}")
+                overlay.hide()
+            elif stuck == "processing":
+                overlay.hide()
+        except Exception as e:
+            log(f"watchdog loop error: {e}")
 
 
 def copy_to_clipboard(text):
@@ -277,6 +300,9 @@ def recover_pending_recordings():
     and writes the combined text to the clipboard once at the end. Per-file
     overwrite would lose all but the last transcript. Never auto-pastes — focus
     at login is unrelated to the dictation context.
+
+    Runs synchronously BEFORE the event tap activates so a fresh dictation
+    can never race the recovery clipboard write.
     """
     if not PENDING_DIR.exists():
         return
@@ -296,7 +322,7 @@ def recover_pending_recordings():
     cutoff = time.time() - PENDING_AGE_WARN_DAYS * 86400
     stale = sum(1 for p in paths if p.stat().st_mtime < cutoff)
     if stale:
-        log(f"WARNING: {stale} pending recording(s) older than {PENDING_AGE_WARN_DAYS}d — whisper-server may be unhealthy")
+        log(f"WARNING: {stale} pending recording(s) older than {PENDING_AGE_WARN_DAYS}d — Groq API may be unreachable")
 
     log(f"found {len(paths)} pending recording(s)")
     recovered = []  # (path, text); text may be empty for hallucination/silence
@@ -328,26 +354,6 @@ def recover_pending_recordings():
     # Delete files only after a successful clipboard write (or on filtered-empty results)
     for path, _ in recovered:
         delete_pending_recording(path)
-
-
-def check_whisper_server():
-    try:
-        urlopen(f"{WHISPER_SERVER}/", timeout=5).read()
-        log("whisper-server reachable")
-    except URLError as e:
-        log(f"WARNING: whisper-server unreachable at startup: {e}")
-    except Exception as e:
-        log(f"WARNING: whisper-server check failed: {e}")
-
-
-def check_log_sizes():
-    try:
-        size = os.path.getsize(WHISPER_LOG_PATH)
-    except OSError:
-        return
-    if size > WHISPER_LOG_WARN_BYTES:
-        mb = size / 1024 / 1024
-        log(f"WARNING: {WHISPER_LOG_PATH} is {mb:.0f}MB — rotate with: launchctl unload ~/Library/LaunchAgents/com.openspeaksy.whisper.plist && : > {WHISPER_LOG_PATH} && launchctl load ~/Library/LaunchAgents/com.openspeaksy.whisper.plist")
 
 
 def on_key_down():
@@ -446,17 +452,28 @@ def main():
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
+    if not GROQ_API_KEYS:
+        log(
+            "FATAL: no Groq API key configured. Set GROQ_API_KEYS in "
+            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
+            "and reload. Get a free key at https://console.groq.com/keys."
+        )
+        os._exit(1)
+
+    log(f"OpenSpeaksy starting — backend: Groq cloud ({len(GROQ_API_KEYS)} key(s)), audio leaves the Mac")
+
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
-    tap_thread = threading.Thread(target=run_event_tap, daemon=True)
-    tap_thread.start()
+    # Recovery runs synchronously BEFORE the tap activates so a fresh dictation
+    # cannot race the recovery clipboard write.
+    recover_pending_recordings()
+
+    threading.Thread(target=watchdog_loop, daemon=True).start()
+    threading.Thread(target=run_event_tap, daemon=True).start()
     time.sleep(0.1)
 
     log("OpenSpeaksy running — hold right Command to record")
-    check_log_sizes()
-    threading.Thread(target=check_whisper_server, daemon=True).start()
-    threading.Thread(target=recover_pending_recordings, daemon=True).start()
     AppHelper.runEventLoop()
 
 
