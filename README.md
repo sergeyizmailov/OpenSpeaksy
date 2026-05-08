@@ -12,9 +12,7 @@ Hold right Command, speak, let go. The text appears in any app.
 
 <br>
 
-<img src="docs/screenshots/recording.png" alt="Recording overlay" width="280">
-<img src="docs/screenshots/loading.png" alt="Transcribing overlay" width="280">
-<img src="docs/screenshots/error.png" alt="Error overlay" width="280">
+<img src="docs/screenshots/recording.png" alt="Recording overlay" width="420">
 
 </div>
 
