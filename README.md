@@ -5,6 +5,7 @@
 **Free, fully local voice dictation for macOS.**
 Hold right Command, speak, let go. The text appears in any app.
 
+[![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-lightgrey.svg)]()
 [![100% local](https://img.shields.io/badge/100%25-local-success.svg)]()
