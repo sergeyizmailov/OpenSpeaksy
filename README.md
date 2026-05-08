@@ -49,26 +49,22 @@ Same idea — without the strings. No subscription, no usage cap, no account, no
 Open **Claude Code**, **Codex CLI**, **Cursor**, or any AI coding agent. Paste this:
 
 ```
-Install OpenSpeaksy on this Mac.
+Install OpenSpeaksy on this Mac:
 
-1. git clone git@github.com:sergeyizmailov/OpenSpeaksy.git ~/Documents/OpenSpeaksy
-   (or use the HTTPS URL if SSH isn't set up)
-2. cd ~/Documents/OpenSpeaksy
-3. Read AGENTS.md and follow the install instructions there.
-4. After ./scripts/install.sh finishes, tell me which exact paths I need to grant
-   Input Monitoring and Accessibility permissions to in System Settings → Privacy & Security.
-5. Verify the local server is up: curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:8178/
+git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
+cd ~/OpenSpeaksy
+./scripts/install.sh
 
-Hardware: macOS on Apple Silicon. I already have Xcode CLT and Homebrew
-(or help me install them if not).
+Then walk me through granting Input Monitoring and Accessibility permissions
+in System Settings → Privacy & Security.
 ```
 
-The agent reads `AGENTS.md`, runs the installer, walks you through the two macOS permission prompts. About 5 minutes hands-free.
+The installer handles Xcode CLT, Homebrew, the model download, and the LaunchAgents. Hands-free except the two permission prompts.
 
 ### Manual install
 
 ```bash
-git clone git@github.com:sergeyizmailov/OpenSpeaksy.git
+git clone https://github.com/sergeyizmailov/OpenSpeaksy.git
 cd OpenSpeaksy
 ./scripts/install.sh
 ```
@@ -88,15 +84,39 @@ Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Su
 
 ## Configuration
 
-The default install uses **Whisper Large v3** — the only model we recommend. Smaller variants (`medium`, `small`) trade quality for speed and noticeably worse on Russian and mixed RU/EN. `large-v3-turbo` is faster but loses precision on punctuation and proper nouns. Stick with `large-v3` unless you know exactly what you're doing.
+### Change the hotkey
 
-To pin a specific upstream whisper.cpp version:
+Default is **right Command**. Edit two constants near the top of [`main.py`](main.py):
+
+```python
+HOTKEY_KEYCODE = 0x36   # right Command
+HOTKEY_FLAG    = 0x10   # left/right distinguishing flag
+```
+
+Common alternatives:
+
+| Key | KEYCODE | FLAG |
+|---|---|---|
+| Right Command (default) | `0x36` | `0x10` |
+| Left Command | `0x37` | `0x08` |
+| Right Option | `0x3D` | `0x40` |
+| Left Option | `0x3A` | `0x20` |
+| Right Control | `0x3E` | `0x2000` |
+| Right Shift | `0x3C` | `0x04` |
+
+After editing, restart: `launchctl stop com.openspeaksy` (KeepAlive auto-restarts it).
+
+### Model
+
+Default: **Whisper Large v3** — the only model we recommend. Smaller variants (`medium`, `small`) trade noticeable quality for speed, especially on Russian and mixed RU/EN. `large-v3-turbo` is faster but loses precision on punctuation and proper nouns. Stick with `large-v3` unless you know what you're doing.
+
+### whisper.cpp version
 
 ```bash
 WHISPER_CPP_REF=master ./scripts/install.sh   # track upstream HEAD instead of v1.7.5
 ```
 
-Tweak the hotkey, recording threshold, watchdog timeouts, or overlay style by editing `main.py` and `overlay.py` directly. The whole codebase is under 1000 lines.
+Recording threshold, watchdog timeouts, and overlay style live in `main.py` and `overlay.py`. The whole codebase is under 1000 lines.
 
 ## How it works
 
