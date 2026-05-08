@@ -41,8 +41,6 @@ Same idea — without the subscription. Bring your own free Groq API key, get su
 - **Reliable.** Recordings are queued to disk; nothing is lost if Groq is unreachable.
 - **Drop-in install.** Hand the repo to any AI coding agent — it sets everything up.
 
-> ⚠️ **Audio leaves your Mac.** OpenSpeaksy sends audio to `api.groq.com` for transcription. If you need fully local, this app isn't for you.
-
 ## Install
 
 Pick the path that fits you. Both end up at the same place: a working install in about five minutes.
