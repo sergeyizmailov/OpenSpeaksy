@@ -12,7 +12,7 @@ Hold right Command, speak, let go. The text appears in any app.
 
 <br>
 
-<img src="docs/screenshots/recording.png" alt="Recording overlay" width="420">
+<img src="docs/logo.png" alt="OpenSpeaksy" width="520">
 
 </div>
 
