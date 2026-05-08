@@ -3,23 +3,43 @@ import os
 import re
 import tempfile
 import struct
+import threading
 import json
 import wave
 from difflib import SequenceMatcher
 from urllib.request import urlopen, Request
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 
 import numpy as np
 
 logger = logging.getLogger("openspeaksy")
 
-WHISPER_SERVER = "http://127.0.0.1:8178"
 REQUEST_TIMEOUT_SEC = 120
 
-# Below this duration use a smaller audio context for ~2x speedup;
-# above it use the full context to preserve quality on long dictations.
-SHORT_AUDIO_THRESHOLD_SEC = 15.0
-SHORT_AUDIO_CTX = "512"
+# Comma-separated list — multiple keys are rotated on HTTP 401/403/429.
+# Single GROQ_API_KEY is also accepted for convenience.
+GROQ_API_KEYS = [k.strip() for k in os.environ.get("GROQ_API_KEYS", "").split(",") if k.strip()]
+if not GROQ_API_KEYS:
+    _single = os.environ.get("GROQ_API_KEY", "").strip()
+    if _single:
+        GROQ_API_KEYS = [_single]
+GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
+GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
+
+_groq_key_index = 0
+_groq_key_lock = threading.Lock()
+
+
+def _current_groq_key():
+    with _groq_key_lock:
+        return GROQ_API_KEYS[_groq_key_index]
+
+
+def _rotate_groq_key():
+    global _groq_key_index
+    with _groq_key_lock:
+        _groq_key_index = (_groq_key_index + 1) % len(GROQ_API_KEYS)
+        return GROQ_API_KEYS[_groq_key_index]
 
 
 class TranscriptionError(Exception):
@@ -130,63 +150,78 @@ class Transcriber:
         lower = text.lower().strip().rstrip(" .!?")
         return lower in HALLUCINATIONS
 
-    def _wav_duration_sec(self, wav_path):
-        try:
-            with wave.open(wav_path, "rb") as w:
-                return w.getnframes() / float(w.getframerate())
-        except Exception:
-            return 0.0
-
     def transcribe_wav_sync(self, wav_path):
-        try:
-            with open(wav_path, "rb") as f:
-                wav_data = f.read()
+        text = self._transcribe_groq(wav_path)
 
-            duration = self._wav_duration_sec(wav_path)
-            use_short_ctx = duration > 0 and duration < SHORT_AUDIO_THRESHOLD_SEC
+        collapsed = collapse_repeated_transcript(text)
+        if len(collapsed) < len(text):
+            logger.info(f"collapsed repeated transcript: {len(text)} -> {len(collapsed)} chars")
+            text = collapsed
 
-            boundary = b"----WhisperBoundary"
-            body = b""
-            body += b"--" + boundary + b"\r\n"
-            body += b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
-            body += b"Content-Type: audio/wav\r\n\r\n"
-            body += wav_data + b"\r\n"
-            body += b"--" + boundary + b"\r\n"
-            body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
-            body += b"json\r\n"
-            body += b"--" + boundary + b"\r\n"
-            body += b'Content-Disposition: form-data; name="temperature"\r\n\r\n'
-            body += b"0.0\r\n"
-            if use_short_ctx:
-                body += b"--" + boundary + b"\r\n"
-                body += b'Content-Disposition: form-data; name="audio_ctx"\r\n\r\n'
-                body += SHORT_AUDIO_CTX.encode() + b"\r\n"
-            body += b"--" + boundary + b"--\r\n"
+        if self._is_hallucination(text):
+            return ""
+        if text:
+            text += " "
+        return text
 
-            req = Request(
-                f"{WHISPER_SERVER}/inference",
-                data=body,
-                headers={"Content-Type": f"multipart/form-data; boundary={boundary.decode()}"},
-            )
-            resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
-            result = json.loads(resp.read().decode())
-            text = result.get("text", "").strip()
-            collapsed = collapse_repeated_transcript(text)
-            if len(collapsed) < len(text):
-                logger.info(f"collapsed repeated transcript: {len(text)} -> {len(collapsed)} chars")
-                text = collapsed
+    def _transcribe_groq(self, wav_path):
+        with open(wav_path, "rb") as f:
+            wav_data = f.read()
 
-            if self._is_hallucination(text):
-                return ""
-            if text:
-                text += " "
-            return text
-        except URLError as e:
-            logger.error(f"whisper-server error: {e}")
-            raise TranscriptionError(str(e)) from e
-        except Exception as e:
-            logger.error(f"transcribe error: {e}")
-            raise TranscriptionError(str(e)) from e
+        boundary = b"----GroqBoundary"
+        body = b""
+        body += b"--" + boundary + b"\r\n"
+        body += b'Content-Disposition: form-data; name="file"; filename="audio.wav"\r\n'
+        body += b"Content-Type: audio/wav\r\n\r\n"
+        body += wav_data + b"\r\n"
+        body += b"--" + boundary + b"\r\n"
+        body += b'Content-Disposition: form-data; name="model"\r\n\r\n'
+        body += GROQ_MODEL.encode() + b"\r\n"
+        body += b"--" + boundary + b"\r\n"
+        body += b'Content-Disposition: form-data; name="response_format"\r\n\r\n'
+        body += b"json\r\n"
+        body += b"--" + boundary + b"\r\n"
+        body += b'Content-Disposition: form-data; name="temperature"\r\n\r\n'
+        body += b"0.0\r\n"
+        body += b"--" + boundary + b"--\r\n"
+
+        # Try each key in turn. Rotate on auth/rate-limit; other errors propagate.
+        last_error = None
+        key = _current_groq_key()
+        for attempt in range(len(GROQ_API_KEYS)):
+            try:
+                req = Request(
+                    GROQ_ENDPOINT,
+                    data=body,
+                    headers={
+                        "Content-Type": f"multipart/form-data; boundary={boundary.decode()}",
+                        "Authorization": f"Bearer {key}",
+                        # Default Python-urllib UA gets 403'd by Groq's WAF.
+                        "User-Agent": "openspeaksy/1.0",
+                    },
+                )
+                resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
+                result = json.loads(resp.read().decode())
+                return result.get("text", "").strip()
+            except HTTPError as e:
+                if e.code in (401, 403, 429) and len(GROQ_API_KEYS) > 1:
+                    logger.warning(
+                        f"groq key {attempt + 1}/{len(GROQ_API_KEYS)} got HTTP {e.code}, rotating"
+                    )
+                    last_error = e
+                    key = _rotate_groq_key()
+                    continue
+                logger.error(f"groq HTTP {e.code}: {e}")
+                raise TranscriptionError(str(e)) from e
+            except URLError as e:
+                logger.error(f"groq error: {e}")
+                raise TranscriptionError(str(e)) from e
+            except Exception as e:
+                logger.error(f"groq transcribe error: {e}")
+                raise TranscriptionError(str(e)) from e
+
+        logger.error(f"all {len(GROQ_API_KEYS)} groq keys exhausted: {last_error}")
+        raise TranscriptionError(f"all keys exhausted: {last_error}")
 
     def transcribe_sync(self, audio):
         wav_path = audio_to_wav(audio)

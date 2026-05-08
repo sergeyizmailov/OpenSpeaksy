@@ -13,6 +13,11 @@
     </array>
     <key>WorkingDirectory</key>
     <string>__PROJECT_ROOT__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>GROQ_API_KEYS</key>
+        <string>__GROQ_API_KEYS__</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
