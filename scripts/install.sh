@@ -81,7 +81,7 @@ mkdir -p "$LAUNCH_AGENTS"
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
                     "$PROJECT_ROOT" \
                     "$GROQ_API_KEYS" <<'PYEOF'
-import sys, plistlib
+import os, sys, plistlib
 template, target, project_root, groq_keys = sys.argv[1:5]
 with open(template, "rb") as f:
     pl = plistlib.load(f)
@@ -95,8 +95,14 @@ def replace(node):
         return node.replace("__PROJECT_ROOT__", project_root).replace("__GROQ_API_KEYS__", groq_keys)
     return node
 
-with open(target, "wb") as f:
+# Open with 0600 from the start so the API key is never world-readable,
+# even briefly. os.open + plistlib.dump on the resulting fd avoids the
+# default-umask window an open(target, "wb") + os.chmod sequence leaves.
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "wb") as f:
     plistlib.dump(replace(pl), f)
+# os.open honors mode only on file creation; chmod fixes a pre-existing target.
+os.chmod(target, 0o600)
 PYEOF
 
 step "Loading LaunchAgent"
