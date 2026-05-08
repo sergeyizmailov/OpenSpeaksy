@@ -10,9 +10,32 @@ Hold right Command, speak, let go. The text appears in any app.
 [![100% local](https://img.shields.io/badge/100%25-local-success.svg)]()
 [![Apple Neural Engine](https://img.shields.io/badge/Apple%20Neural%20Engine-accelerated-purple.svg)]()
 
+<br>
+
+<img src="docs/screenshots/recording.png" alt="Recording overlay" width="280">
+<img src="docs/screenshots/loading.png" alt="Transcribing overlay" width="280">
+<img src="docs/screenshots/error.png" alt="Error overlay" width="280">
+
 </div>
 
 ---
+
+## A free alternative to Wispr Flow, Superwhisper, Whisper Memos
+
+Same idea — without the strings. No subscription, no usage cap, no account, no ads, no cloud round-trip. Same Whisper Large v3 model under the hood.
+
+| | OpenSpeaksy | Typical paid app |
+|---|---|---|
+| Price | **Free forever** (MIT) | $10 – 15 / month |
+| Where audio goes | Your Mac, always | Often their servers |
+| Account / signup | None | Required |
+| Usage limits | None | Daily / monthly caps |
+| Ads & upsells | Never | Sometimes |
+| Source code | Open | Closed |
+
+---
+
+## What you get
 
 - **Free forever.** MIT licensed. No accounts, no subscriptions, no telemetry.
 - **Fully local.** Audio never leaves your Mac. No internet required after install.
