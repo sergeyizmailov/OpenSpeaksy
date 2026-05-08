@@ -2,14 +2,13 @@
 
 # OpenSpeaksy
 
-**Free, fully local voice dictation for macOS.**
+**Free voice dictation for macOS, powered by the Groq Whisper API.**
 Hold right Command, speak, let go. The text appears in any app.
 
 [![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-lightgrey.svg)]()
-[![100% local](https://img.shields.io/badge/100%25-local-success.svg)]()
-[![Apple Neural Engine](https://img.shields.io/badge/Apple%20Neural%20Engine-accelerated-purple.svg)]()
+[![Backend: Groq](https://img.shields.io/badge/backend-Groq%20Whisper-orange.svg)](https://console.groq.com/)
 
 <br>
 
@@ -21,14 +20,14 @@ Hold right Command, speak, let go. The text appears in any app.
 
 ## A free alternative to Wispr Flow, Superwhisper
 
-Same idea — without the strings. No subscription, no usage cap, no account, no ads, no cloud round-trip. Same Whisper Large v3 model under the hood.
+Same idea — without the subscription. Bring your own free Groq API key, get sub-second transcriptions, no account on us, no ads, no tracking, source open.
 
 | | OpenSpeaksy | Typical paid app |
 |---|---|---|
-| Price | **Free forever** (MIT) | $10 – 15 / month |
-| Where audio goes | Your Mac, always | Often their servers |
-| Account / signup | None | Required |
-| Usage limits | None | Daily / monthly caps |
+| Price | **Free** (MIT) — bring your own Groq key | $10 – 15 / month |
+| Transcription latency | ~0.2 – 0.5 s | similar |
+| Account / signup | Groq free key, no OpenSpeaksy account | Required |
+| Usage limits | Groq's free-tier daily quota | Daily / monthly caps |
 | Ads & upsells | Never | Sometimes |
 | Source code | Open | Closed |
 
@@ -36,14 +35,17 @@ Same idea — without the strings. No subscription, no usage cap, no account, no
 
 ## What you get
 
-- **Free forever.** MIT licensed. No accounts, no subscriptions, no telemetry.
-- **Fully local.** Audio never leaves your Mac. No internet required after install.
-- **Fast.** Whisper Large v3 on Apple Neural Engine — ~0.3 – 0.6 s for short phrases.
+- **Free.** MIT licensed. No accounts, no subscriptions, no telemetry.
+- **Fast.** Groq's LPU runs Whisper Large v3 in ~0.2 – 0.5 s for short phrases.
 - **Multilingual.** Auto-detects language. Handles Russian, English, mixed speech well.
-- **Reliable.** Recordings are queued to disk; nothing is lost if anything crashes.
-- **Drop-in install.** Hand the repo to any AI coding agent — it sets everything up for you.
+- **Reliable.** Recordings are queued to disk; nothing is lost if Groq is unreachable.
+- **Drop-in install.** Hand the repo to any AI coding agent — it sets everything up.
+
+> ⚠️ **Audio leaves your Mac.** OpenSpeaksy sends WAV to `api.groq.com` for transcription. If you need fully local, this branch isn't for you.
 
 ## Install
+
+You'll need a free Groq API key — get one at [console.groq.com/keys](https://console.groq.com/keys).
 
 ### One-prompt install (recommended)
 
@@ -56,11 +58,10 @@ git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
 cd ~/OpenSpeaksy
 ./scripts/install.sh
 
+The installer will ask for my Groq API key — I'll paste it when prompted.
 Then walk me through granting Input Monitoring and Accessibility permissions
 in System Settings → Privacy & Security.
 ```
-
-The installer handles Xcode CLT, Homebrew, the model download, and the LaunchAgents. Hands-free except the two permission prompts.
 
 ### Manual install
 
@@ -68,6 +69,7 @@ The installer handles Xcode CLT, Homebrew, the model download, and the LaunchAge
 git clone https://github.com/sergeyizmailov/OpenSpeaksy.git
 cd OpenSpeaksy
 ./scripts/install.sh
+# Paste your Groq API key when prompted
 ```
 
 Then grant **Input Monitoring** and **Accessibility** to `venv/bin/python` in System Settings → Privacy & Security.
@@ -79,7 +81,7 @@ Hold **right ⌘**, speak, release. Done. The transcription pastes into the focu
 A small pill appears at the top of the screen:
 - **Animated bars** while recording
 - **Spinner** while transcribing
-- **Red `!`** if anything fails
+- **Red `!`** if Groq returns an error
 
 Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered.
 
@@ -107,50 +109,49 @@ Common alternatives:
 
 After editing, restart: `launchctl stop com.openspeaksy` (KeepAlive auto-restarts it).
 
-### Model
+### Rotate or change the API key
 
-Default: **Whisper Large v3** — the only model we recommend. Smaller variants (`medium`, `small`) trade noticeable quality for speed, especially on Russian and mixed RU/EN. `large-v3-turbo` is faster but loses precision on punctuation and proper nouns. Stick with `large-v3` unless you know what you're doing.
-
-### whisper.cpp version
+Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change the `GROQ_API_KEYS` value (comma-separated for multiple keys), then:
 
 ```bash
-WHISPER_CPP_REF=master ./scripts/install.sh   # track upstream HEAD instead of v1.7.5
+launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
+launchctl load   ~/Library/LaunchAgents/com.openspeaksy.plist
 ```
 
-Recording threshold, watchdog timeouts, and overlay style live in `main.py` and `overlay.py`. The whole codebase is under 1000 lines.
+### Multiple keys with auto-rotation
+
+`GROQ_API_KEYS=key1,key2,key3` enables rotation: on HTTP 401/403/429 the worker advances to the next key and retries the same request. Useful for revoke/compromise scenarios. Note that Groq rate limits are per-organization, so multiple keys from one account share the daily quota — multiple accounts give you separate quotas.
+
+### Model
+
+Default is `whisper-large-v3`. To experiment, set `GROQ_MODEL` in the plist's `EnvironmentVariables` (`whisper-large-v3-turbo`, etc.). Stick with `large-v3` unless you know what you're doing — turbo loses precision on punctuation and proper nouns.
 
 ## How it works
 
-Two LaunchAgents run in the background:
+A single LaunchAgent (`com.openspeaksy`) runs `main.py`. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording to `.pending/` (mode `0700`, files `0600`), POSTs the WAV to `api.groq.com/openai/v1/audio/transcriptions`, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
 
-| Service | Role |
-|---|---|
-| `com.openspeaksy.whisper` | `whisper-server` from whisper.cpp on `127.0.0.1:8178`, model resident in RAM, encoder loaded onto the Apple Neural Engine |
-| `com.openspeaksy` | Python control process: CGEventTap for the hotkey, PortAudio for capture, NSPanel overlay, NSPasteboard + synthetic ⌘V for paste |
-
-Recordings are written atomically to `.pending/` (mode `0700`, files `0600`) before transcription and deleted only after a successful paste. A watchdog auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between.
+Recordings are written atomically (`.tmp` + `os.replace`) and deleted only after a successful paste. A separate watchdog thread auto-recovers stuck states every few seconds. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. If Groq is unreachable, the audio stays in `.pending/`; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
 
 ## Performance
 
-On Apple M2, Whisper Large v3 with the Core ML encoder running on ANE:
+On any modern Mac with reasonable network:
 
 | Audio length | Latency |
 |---|---|
-| 1 s | ~0.3 s |
-| 5 s | ~0.6 s |
-| 11 s (JFK sample) | ~1.7 s |
-| 30 s | ~4 s |
+| 1 s | ~0.2 s |
+| 5 s | ~0.4 s |
+| 11 s (JFK sample) | ~0.55 s |
+| 30 s | ~1 s |
 
-ANE acceleration gives a 2 – 3× speedup over CPU-only on short dictation, where the encoder dominates.
+The Mac does almost nothing — capture and HTTP. The model lives on Groq's LPU.
 
 ## Logs
 
 ```bash
 tail -f ~/Library/Logs/com.openspeaksy/main.log     # app log, rotated to 6 MB max
-tail -f /tmp/openspeaksy-whisper.log                # whisper-server log
 ```
 
-The app log captures startup health checks, watchdog events, errors, and recovery. Per-transcription chatter is intentionally suppressed for privacy and brevity.
+The app log captures startup, watchdog events, errors, and recovery. Per-transcription chatter is intentionally suppressed for privacy and brevity.
 
 ## Uninstall
 
@@ -158,11 +159,11 @@ The app log captures startup health checks, watchdog events, errors, and recover
 ./scripts/uninstall.sh
 ```
 
-Removes the LaunchAgents and logs. Project files, the model, and any queued recordings are left intact — delete the directory manually if you want a full wipe.
+Removes the LaunchAgent and logs. Project files and any queued recordings are left intact — delete the directory manually if you want a full wipe.
 
 ## Built on
 
-- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) by Georgi Gerganov — the engine that does the actual work
+- [Groq Whisper API](https://console.groq.com/docs/speech-to-text) — `whisper-large-v3` on the LPU
 - [OpenAI Whisper](https://github.com/openai/whisper) — the underlying model
 - [PyObjC](https://github.com/ronaldoussoren/pyobjc) — for the macOS event tap and overlay
 
