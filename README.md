@@ -45,9 +45,13 @@ Same idea — without the subscription. Bring your own free Groq API key, get su
 
 ## Install
 
-You'll need a free Groq API key — get one at [console.groq.com/keys](https://console.groq.com/keys). Click **Create API Key**, then copy the long `gsk_...` string.
+Pick the path that fits you. Both end up at the same place: a working install in about five minutes.
 
-### One-prompt install (recommended)
+### Prerequisite — get a free Groq API key
+
+Sign in at [console.groq.com/keys](https://console.groq.com/keys), click **Create API Key**, and copy the long `gsk_...` string. Free tier, no card required.
+
+### Option A — One-prompt install (recommended for most users)
 
 Open **Claude**, **ChatGPT**, **Cursor**, or any AI coding assistant. Paste this:
 
@@ -65,18 +69,35 @@ in System Settings → Privacy & Security.
 
 The assistant runs the commands, asks for your key at the right moment, and tells you exactly which two switches to flip in System Settings. No Terminal knowledge needed.
 
-### Manual install
+### Option B — Manual install
 
-If you prefer the Terminal directly:
+If you'd rather drive the Terminal yourself:
+
+**1.** Clone and run the installer:
 
 ```bash
-git clone https://github.com/sergeyizmailov/OpenSpeaksy.git
-cd OpenSpeaksy
+git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
+cd ~/OpenSpeaksy
 ./scripts/install.sh
-# Paste your Groq API key when prompted
 ```
 
-Then grant **Input Monitoring** and **Accessibility** to `venv/bin/python` in System Settings → Privacy & Security.
+When prompted, paste your Groq API key and press Enter. The installer creates a Python venv, generates the LaunchAgent plist (with the key stored at `0600` so only your user can read it), and starts the background service.
+
+**2.** Grant macOS permissions. Open **System Settings → Privacy & Security**:
+
+- **Input Monitoring** — turn on for `~/OpenSpeaksy/venv/bin/python`
+- **Accessibility** — turn on the same binary
+- **Microphone** — macOS will prompt on the first recording; click **Allow**
+
+**3.** Try it. Hold right Command, say something, let go. The text appears wherever your cursor is.
+
+To verify the service is running:
+
+```bash
+tail -f ~/Library/Logs/com.openspeaksy/main.log
+```
+
+You should see `OpenSpeaksy running — hold right Command to record`.
 
 ## Usage
 
