@@ -7,15 +7,15 @@ focused on macOS dictation — please read this before opening a PR.
 
 - macOS reliability and UX improvements
 - New hotkey / overlay options
-- Whisper / whisper.cpp integration tweaks
+- Groq API integration tweaks (rate-limit handling, model parameters)
 - Documentation, install-script fixes, packaging
 - Bug fixes with a clear repro
 
 ## What's out of scope
 
-- Cloud transcription backends. The whole point is "fully local".
 - Telemetry, analytics, account systems.
 - Auto-pasting from startup recovery (privacy: focus is unrelated to the dictation context).
+- Logging transcribed text or API keys.
 - Major framework rewrites without prior discussion.
 
 A Windows or Linux port is welcome but should live in a separate fork or a
@@ -55,10 +55,9 @@ input catches these without affecting genuinely distinct sentences.
 Open an issue with:
 
 - macOS version + Apple Silicon / Intel
-- Whisper model in use (`large-v3`, `large-v3-turbo`, etc.)
+- Groq model in use (`whisper-large-v3` is the default)
 - Reproduction steps
-- Relevant lines from `~/Library/Logs/com.openspeaksy/main.log` and
-  `/tmp/openspeaksy-whisper.log`
+- Relevant lines from `~/Library/Logs/com.openspeaksy/main.log`
 
-**Never paste transcribed text or audio into an issue** — those are private.
-Lengths, error messages, and paths are enough.
+**Never paste transcribed text, audio, or your Groq API key into an issue** —
+those are private. Lengths, error messages, and paths are enough.
