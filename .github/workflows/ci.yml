@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest
+
+      - name: Compile Python sources
+        run: python -m py_compile main.py recorder.py transcriber.py overlay.py
+
+      - name: Lint shell scripts
+        run: |
+          bash -n scripts/install.sh
+          bash -n scripts/uninstall.sh
+
+      - name: Validate plist templates
+        run: plutil -lint launchd/*.plist.template
+
+      - name: Run tests
+        run: pytest tests/ -v
