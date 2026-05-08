@@ -1,0 +1,6 @@
+# Pinned to versions verified on macOS 13+ Apple Silicon, Python 3.13.
+# Bump deliberately — bleeding-edge PyObjC has historically broken CGEventTap callbacks.
+sounddevice==0.5.5
+numpy==2.4.4
+pyobjc-framework-Cocoa==12.1
+pyobjc-framework-Quartz==12.1

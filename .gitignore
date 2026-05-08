@@ -1,0 +1,23 @@
+# Runtime data
+.pending/
+.notes/
+
+# Python
+venv/
+venv-coreml/
+__pycache__/
+*.pyc
+*.pyo
+
+# whisper.cpp — cloned and built by the installer
+whisper.cpp/
+
+# macOS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Logs
+*.log
