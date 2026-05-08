@@ -56,9 +56,14 @@ if [[ -z "${GROQ_API_KEYS:-}" ]]; then
     For multiple keys with rotation, paste them comma-separated.
 
 EOF
-    read -r -p "    Paste your Groq API key(s): " GROQ_API_KEYS
+    # -s hides the input so the secret doesn't end up in shell scrollback or
+    # screen-share recordings. Echo a confirmation with only the last 4 chars
+    # so the user can sanity-check they pasted the right key.
+    read -rs -p "    Paste your Groq API key(s): " GROQ_API_KEYS
+    echo
 fi
 [[ -n "$GROQ_API_KEYS" ]] || fail "no Groq API key provided"
+note "Got key ending in ...${GROQ_API_KEYS: -4}"
 
 # --- main app venv ----------------------------------------------------------
 
