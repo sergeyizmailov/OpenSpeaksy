@@ -31,8 +31,10 @@ from recorder import Recorder
 from transcriber import Transcriber, TranscriptionError, write_wav, WHISPER_SERVER
 from overlay import Overlay
 
-RIGHT_CMD_KEYCODE = 0x36
-RIGHT_CMD_FLAG = 0x10  # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
+# Hotkey configuration. Default is right Command.
+# To use a different modifier, change both constants — see README for keycode/flag table.
+HOTKEY_KEYCODE = 0x36   # right Command
+HOTKEY_FLAG    = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
 V_KEY = 0x09
 MIN_AUDIO_SAMPLES = 16000
 PB_TYPE = "public.utf8-plain-text"
@@ -403,11 +405,11 @@ def tap_callback(proxy, event_type, event, refcon):
             return event
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-        if keycode == RIGHT_CMD_KEYCODE:
-            # Check device-dependent flag specifically for right Cmd —
-            # kCGEventFlagMaskCommand is shared with left Cmd and produces false positives
-            right_pressed = bool(CGEventGetFlags(event) & RIGHT_CMD_FLAG)
-            if right_pressed:
+        if keycode == HOTKEY_KEYCODE:
+            # Device-dependent flag distinguishes left vs right modifier —
+            # the shared mask (e.g. kCGEventFlagMaskCommand) catches both
+            pressed = bool(CGEventGetFlags(event) & HOTKEY_FLAG)
+            if pressed:
                 on_key_down()
             else:
                 on_key_up()
