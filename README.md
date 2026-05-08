@@ -18,7 +18,7 @@ Hold right Command, speak, let go. The text appears in any app.
 
 ---
 
-## A free alternative to Wispr Flow, Superwhisper, Whisper Memos
+## A free alternative to Wispr Flow, Superwhisper
 
 Same idea — without the strings. No subscription, no usage cap, no account, no ads, no cloud round-trip. Same Whisper Large v3 model under the hood.
 
