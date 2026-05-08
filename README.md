@@ -34,7 +34,16 @@ You only need a free key from Groq (the company that does the actual voice-to-te
 
 **Step 1.** Get a free key at [console.groq.com/keys](https://console.groq.com/keys). Click **Create API Key**, copy the long `gsk_...` string.
 
-**Step 2.** Open Terminal and run:
+**Step 2.** Open **Claude**, **ChatGPT**, **Cursor**, or any AI coding assistant, and paste this:
+
+> Install OpenSpeaksy from <https://github.com/sergeyizmailov/OpenSpeaksy> on this Mac. I have a Groq API key ready to paste when the installer asks. After install, walk me through turning on Input Monitoring and Accessibility in System Settings → Privacy & Security.
+
+The assistant will run the commands, ask for your key, and tell you exactly which two switches to flip in System Settings. No Terminal knowledge needed.
+
+**Step 3.** Hold right Command, talk, let go. Done.
+
+<details>
+<summary>Prefer the Terminal?</summary>
 
 ```bash
 git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
@@ -42,17 +51,9 @@ cd ~/OpenSpeaksy
 ./scripts/install.sh
 ```
 
-When it asks for your key, paste it and press Enter.
+Paste the key when prompted. Then in **System Settings → Privacy & Security**, turn on **Input Monitoring** and **Accessibility** for `python` (you'll find it in the list).
 
-**Step 3.** Mac will need permission to listen to your keyboard and paste text. Open **System Settings → Privacy & Security**, and turn on:
-- **Input Monitoring** — for `python` (you'll see the file in the list)
-- **Accessibility** — same `python`
-
-That's it. Hold right Command, talk, let go.
-
-> Don't have Terminal experience? Open **Claude**, **ChatGPT**, **Cursor**, or any AI assistant, paste this and it'll do everything for you:
->
-> > Install OpenSpeaksy from <https://github.com/sergeyizmailov/OpenSpeaksy>. I have a Groq API key ready. Walk me through giving it the macOS permissions.
+</details>
 
 ## How to use
 
