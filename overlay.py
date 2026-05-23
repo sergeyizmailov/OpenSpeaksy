@@ -18,18 +18,25 @@ FPS = 1.0 / 60.0
 
 BAR_COLOR = None
 BAR_DIM = None
+TRANSLATE_BAR = None       # Violet accent for translate mode — visually distinct from dictate sky-blue
+TRANSLATE_BAR_DIM = None
 BG_COLOR = None
+BG_TRANSLATE = None        # Subtle violet tint on the pill background for translate mode
 BG_ERROR = None
 ERROR_BAR = None
 CLEAR = None
 
 
 def _init_colors():
-    global BAR_COLOR, BAR_DIM, BG_COLOR, BG_ERROR, ERROR_BAR, CLEAR
+    global BAR_COLOR, BAR_DIM, TRANSLATE_BAR, TRANSLATE_BAR_DIM
+    global BG_COLOR, BG_TRANSLATE, BG_ERROR, ERROR_BAR, CLEAR
     if BAR_COLOR is None:
         BAR_COLOR = NSColor.colorWithRed_green_blue_alpha_(56 / 255, 189 / 255, 248 / 255, 1.0)
         BAR_DIM  = NSColor.colorWithRed_green_blue_alpha_(56 / 255, 189 / 255, 248 / 255, 0.2)
+        TRANSLATE_BAR = NSColor.colorWithRed_green_blue_alpha_(167 / 255, 139 / 255, 250 / 255, 1.0)
+        TRANSLATE_BAR_DIM = NSColor.colorWithRed_green_blue_alpha_(167 / 255, 139 / 255, 250 / 255, 0.2)
         BG_COLOR = NSColor.colorWithRed_green_blue_alpha_(15 / 255, 23 / 255, 42 / 255, 0.92)
+        BG_TRANSLATE = NSColor.colorWithRed_green_blue_alpha_(30 / 255, 20 / 255, 55 / 255, 0.92)
         BG_ERROR = NSColor.colorWithRed_green_blue_alpha_(80 / 255, 15 / 255, 20 / 255, 0.95)
         ERROR_BAR = NSColor.colorWithRed_green_blue_alpha_(248 / 255, 113 / 255, 113 / 255, 1.0)
         CLEAR    = NSColor.clearColor()
@@ -40,6 +47,7 @@ class OverlayView(NSView):
         self = objc.super(OverlayView, self).initWithFrame_(frame)
         if self is not None:
             self._mode = None
+            self._translate = False
             self._phase = 0.0
             self.setWantsLayer_(True)
         return self
@@ -48,6 +56,11 @@ class OverlayView(NSView):
         if self._mode != mode:
             self._mode = mode
             self._phase = 0.0
+
+    def setTranslate_(self, translate):
+        if self._translate != translate:
+            self._translate = translate
+            self.setNeedsDisplay_(True)
 
     def tick_(self, timer):
         if self._mode == "recording":
@@ -63,10 +76,15 @@ class OverlayView(NSView):
         _init_colors()
         bounds = self.bounds()
 
+        bar_color = TRANSLATE_BAR if self._translate else BAR_COLOR
+        bar_dim = TRANSLATE_BAR_DIM if self._translate else BAR_DIM
+
         # Pill shape — R stays constant so small panel = circle, full panel = pill
         path = NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(bounds, R, R)
         if self._mode == "error":
             BG_ERROR.setFill()
+        elif self._translate:
+            BG_TRANSLATE.setFill()
         else:
             BG_COLOR.setFill()
         path.fill()
@@ -88,7 +106,7 @@ class OverlayView(NSView):
             barW, gap = 2.0, 3.5
             total = 5 * barW + 4 * gap
             x0 = (bounds.size.width - total) / 2
-            BAR_COLOR.setFill()
+            bar_color.setFill()
             for i in range(5):
                 t = math.sin(self._phase + i * 1.2) * 0.5 + 0.5
                 h = 4 + t * 12
@@ -103,7 +121,7 @@ class OverlayView(NSView):
             cy = bounds.size.height / 2
             center = NSMakePoint(cx, cy)
 
-            BAR_DIM.setStroke()
+            bar_dim.setStroke()
             circle = NSBezierPath.bezierPath()
             circle.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
                 center, 8.0, 0, 360, False
@@ -111,7 +129,7 @@ class OverlayView(NSView):
             circle.setLineWidth_(2)
             circle.stroke()
 
-            BAR_COLOR.setStroke()
+            bar_color.setStroke()
             arc = NSBezierPath.bezierPath()
             arc.appendBezierPathWithArcWithCenter_radius_startAngle_endAngle_clockwise_(
                 center, 8.0, self._phase, self._phase + 90, False
@@ -127,8 +145,8 @@ class Overlay:
         self._timer = None
         self._hiding = False
 
-    def show(self, mode):
-        AppHelper.callAfter(self._show, mode)
+    def show(self, mode, translate=False):
+        AppHelper.callAfter(self._show, mode, translate)
 
     def flash_error(self, duration=1.2):
         AppHelper.callAfter(self._flash_error, duration)
@@ -137,7 +155,9 @@ class Overlay:
         AppHelper.callAfter(self._hide)
 
     def _flash_error(self, duration):
-        self._show("error")
+        # Error keeps its red background regardless of cycle intent —
+        # translate flag is irrelevant for the error glyph.
+        self._show("error", False)
         threading.Timer(duration, lambda: AppHelper.callAfter(self._hide)).start()
 
     def _center(self):
@@ -146,7 +166,7 @@ class Overlay:
         y = sf.origin.y + MARGIN - H
         return x, y
 
-    def _show(self, mode):
+    def _show(self, mode, translate):
         _init_colors()
         self._hiding = False
 
@@ -156,6 +176,7 @@ class Overlay:
             x, y = self._center()
             self._panel.setFrame_display_(NSMakeRect(x, y, W, H), True)
             if self._view:
+                self._view.setTranslate_(translate)
                 self._view.setMode_(mode)
             return
 
@@ -185,6 +206,7 @@ class Overlay:
         panel.setAlphaValue_(0.0)
 
         view = OverlayView.alloc().initWithFrame_(NSMakeRect(0, 0, W, H))
+        view.setTranslate_(translate)
         view.setMode_(mode)
         panel.setContentView_(view)
         panel.orderFrontRegardless()

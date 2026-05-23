@@ -30,8 +30,12 @@ from overlay import Overlay
 
 # Hotkey configuration. Default is right Command.
 # To use a different modifier, change both constants — see README for keycode/flag table.
-HOTKEY_KEYCODE = 0x36   # right Command
-HOTKEY_FLAG    = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
+HOTKEY_KEYCODE   = 0x36   # right Command
+HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
+TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
+TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
+MODE_DICTATE   = "dictate"
+MODE_TRANSLATE = "translate"
 V_KEY = 0x09
 MIN_AUDIO_SAMPLES = 16000
 PB_TYPE = "public.utf8-plain-text"
@@ -82,6 +86,11 @@ state_lock = threading.Lock()
 # A worker may only mutate state/clipboard if its token still matches current_job_id —
 # otherwise it is a stale completion from a watchdog-reset cycle.
 current_job_id = 0
+# Which hotkey owns the in-flight cycle. Set in on_key_down, consumed in on_key_up.
+# A key-up event whose keycode doesn't match current_hotkey is ignored, so tapping
+# the OTHER hotkey mid-record can't end the cycle. Watchdog also clears it on reset.
+current_hotkey = None
+current_mode = None
 tap_ref = None
 source_ref = None
 
@@ -93,33 +102,26 @@ def set_state(new):
         state_ts = time.monotonic()
 
 
-def cas_state(expected, new):
-    """Atomic compare-and-set. Returns True if state was updated."""
-    global state, state_ts
-    with state_lock:
-        if state == expected:
-            state = new
-            state_ts = time.monotonic()
-            return True
-        return False
-
-
 def begin_processing():
     """
     Atomically transition recording→processing AND allocate a fresh job_id under
     the same lock. Splitting these into two separate locks would leave a window
     in which an old worker could match the new "processing" state with its
-    pre-watchdog-reset token. Returns the new job_id, or None if state wasn't
-    "recording" when called.
+    pre-watchdog-reset token. Also captures the cycle's mode under the same
+    lock so the worker can route to dictate vs translate without re-reading
+    mutable globals.
+    Returns (job_id, mode), or (None, None) if state wasn't "recording".
     """
-    global state, state_ts, current_job_id
+    global state, state_ts, current_job_id, current_hotkey
     with state_lock:
         if state != "recording":
-            return None
+            return None, None
         state = "processing"
         state_ts = time.monotonic()
         current_job_id += 1
-        return current_job_id
+        mode = current_mode
+        current_hotkey = None
+        return current_job_id, mode
 
 
 def _claim_job_completion(job_id):
@@ -153,7 +155,7 @@ def _watchdog_tick():
     overlay.hide() is non-blocking — it just queues onto the AppKit main
     loop via AppHelper.callAfter, so holding the lock during it is free.
     """
-    global state, state_ts, current_job_id
+    global state, state_ts, current_job_id, current_hotkey, current_mode
     with state_lock:
         elapsed = time.monotonic() - state_ts
         stuck = None
@@ -162,12 +164,16 @@ def _watchdog_tick():
             state = "idle"
             state_ts = time.monotonic()
             current_job_id += 1  # invalidate any in-flight worker token
+            current_hotkey = None
+            current_mode = None
             stuck = "recording"
         elif state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
             log(f"watchdog: stuck in processing for {elapsed:.0f}s, resetting")
             state = "idle"
             state_ts = time.monotonic()
             current_job_id += 1
+            current_hotkey = None
+            current_mode = None
             stuck = "processing"
 
         if stuck == "recording":
@@ -220,9 +226,15 @@ def _ensure_pending_dir():
         log(f"chmod pending dir error: {e}")
 
 
-def save_pending_recording(audio):
+def save_pending_recording(audio, mode):
+    """
+    Encode mode in the filename so a crash between save and worker spawn doesn't
+    lose the language/translate intent. Filename: ...-<uuid>.<mode>.wav. Legacy
+    pre-upgrade files without the mode segment are treated as dictate by
+    parse_pending_mode().
+    """
     _ensure_pending_dir()
-    name = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}.wav"
+    name = f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex}.{mode}.wav"
     final = PENDING_DIR / name
     tmp = PENDING_DIR / (name + ".tmp")
     write_wav(audio, tmp)
@@ -232,6 +244,18 @@ def save_pending_recording(audio):
         log(f"chmod pending file error: {e}")
     os.replace(tmp, final)  # atomic — recovery never sees a half-written WAV
     return final
+
+
+def parse_pending_mode(path):
+    """
+    Filename format: <timestamp>-<uuid>.<mode>.wav. Returns the mode if present,
+    or MODE_DICTATE for legacy files (pre-upgrade) with no mode segment.
+    """
+    stem = path.stem  # strips final .wav
+    for mode in (MODE_TRANSLATE, MODE_DICTATE):
+        if stem.endswith(f".{mode}"):
+            return mode
+    return MODE_DICTATE
 
 
 def delete_pending_recording(path):
@@ -259,16 +283,20 @@ def is_valid_wav(path):
         return False
 
 
-def process_pending_recording(path, job_id):
+def process_pending_recording(path, job_id, mode):
     """
     Live worker spawned by on_key_up. job_id is the generation token captured
-    when the worker was scheduled. Recovery uses recover_pending_recordings
-    instead — it has different rules around the clipboard.
+    when the worker was scheduled; mode selects dictate vs translate.
+    Recovery uses recover_pending_recordings instead — it has different rules
+    around the clipboard.
     """
     text = None
     error = False
     try:
-        text = transcriber.transcribe_wav_sync(path)
+        if mode == MODE_TRANSLATE:
+            text = transcriber.transcribe_and_translate_sync(path)
+        else:
+            text = transcriber.transcribe_wav_sync(path)
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
         error = True
@@ -339,8 +367,12 @@ def recover_pending_recordings():
         if not is_valid_wav(path):
             quarantine_path(path, "corrupt WAV header")
             continue
+        mode = parse_pending_mode(path)
         try:
-            text = transcriber.transcribe_wav_sync(path)
+            if mode == MODE_TRANSLATE:
+                text = transcriber.transcribe_and_translate_sync(path)
+            else:
+                text = transcriber.transcribe_wav_sync(path)
         except TranscriptionError as e:
             log(f"recovery transcription error {path.name}: {e}")
             continue  # leave file for next startup
@@ -365,23 +397,64 @@ def recover_pending_recordings():
         delete_pending_recording(path)
 
 
-def on_key_down():
-    if not cas_state("idle", "recording"):
+def _begin_recording(keycode, mode):
+    """
+    Atomic idle→recording transition that also latches the hotkey and mode
+    in a single critical section. Splitting the state flip and the
+    hotkey/mode write into two locks would leave a window in which a key-up
+    can see the new "recording" state but the wrong (stale) hotkey/mode.
+    Returns True on success.
+    """
+    global state, state_ts, current_hotkey, current_mode
+    with state_lock:
+        if state != "idle":
+            return False
+        state = "recording"
+        state_ts = time.monotonic()
+        current_hotkey = keycode
+        current_mode = mode
+        return True
+
+
+def _abandon_recording_cycle():
+    """
+    Drop a cycle that failed to launch (recorder.start error). Resets state to
+    idle AND clears the hotkey/mode in a single critical section — separate
+    set_state + clear would leave a window in which another keypress could
+    start a new cycle that the second mutation then clobbers.
+    """
+    global state, state_ts, current_hotkey, current_mode
+    with state_lock:
+        if state == "recording":
+            state = "idle"
+            state_ts = time.monotonic()
+        current_hotkey = None
+        current_mode = None
+
+
+def on_key_down(keycode, mode):
+    if not _begin_recording(keycode, mode):
         return
     try:
         recorder.start()
-        overlay.show("recording")
+        overlay.show("recording", translate=(mode == MODE_TRANSLATE))
     except Exception as e:
         log(f"recorder.start error: {e}")
         overlay.hide()
-        set_state("idle")
+        _abandon_recording_cycle()
 
 
-def on_key_up():
-    # Atomically claim the recording→processing transition AND a fresh job_id.
-    # An old worker's claim must not match this id even in the tiny window
-    # between state change and worker spawn.
-    job_id = begin_processing()
+def on_key_up(keycode):
+    # Ignore key-up for a hotkey that did NOT start the current cycle.
+    # Without this, tapping the other hotkey mid-record would end the cycle.
+    with state_lock:
+        if current_hotkey != keycode:
+            return
+
+    # Atomically claim the recording→processing transition, capture the mode,
+    # and allocate a fresh job_id. An old worker's claim must not match this
+    # id even in the tiny window between state change and worker spawn.
+    job_id, mode = begin_processing()
     if job_id is None:
         return
 
@@ -399,15 +472,15 @@ def on_key_up():
         return
 
     try:
-        wav_path = save_pending_recording(audio)
+        wav_path = save_pending_recording(audio, mode)
     except Exception as e:
         log(f"save pending recording error: {e}")
         overlay.hide()
         set_state("idle")
         return
 
-    overlay.show("loading")
-    threading.Thread(target=process_pending_recording, args=(wav_path, job_id), daemon=True).start()
+    overlay.show("loading", translate=(mode == MODE_TRANSLATE))
+    threading.Thread(target=process_pending_recording, args=(wav_path, job_id, mode), daemon=True).start()
 
 
 def tap_callback(proxy, event_type, event, refcon):
@@ -420,14 +493,20 @@ def tap_callback(proxy, event_type, event, refcon):
             return event
 
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+        # Device-dependent flag distinguishes left vs right modifier —
+        # the shared mask (e.g. kCGEventFlagMaskCommand) catches both
         if keycode == HOTKEY_KEYCODE:
-            # Device-dependent flag distinguishes left vs right modifier —
-            # the shared mask (e.g. kCGEventFlagMaskCommand) catches both
             pressed = bool(CGEventGetFlags(event) & HOTKEY_FLAG)
             if pressed:
-                on_key_down()
+                on_key_down(keycode, MODE_DICTATE)
             else:
-                on_key_up()
+                on_key_up(keycode)
+        elif keycode == TRANSLATE_KEYCODE:
+            pressed = bool(CGEventGetFlags(event) & TRANSLATE_FLAG)
+            if pressed:
+                on_key_down(keycode, MODE_TRANSLATE)
+            else:
+                on_key_up(keycode)
     except Exception as e:
         log(f"tap_callback error: {e}")
 
@@ -482,7 +561,7 @@ def main():
     threading.Thread(target=run_event_tap, daemon=True).start()
     time.sleep(0.1)
 
-    log("OpenSpeaksy running — hold right Command to record")
+    log("OpenSpeaksy running — hold right Command (dictate) or right Option (Russian→English)")
     AppHelper.runEventLoop()
 
 

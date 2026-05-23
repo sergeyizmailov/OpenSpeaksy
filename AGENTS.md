@@ -18,7 +18,7 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
    see `OpenSpeaksy starting — backend: Groq cloud (1 key(s))`.
-6. Tell the user to hold right Command, speak, release.
+6. Tell the user to hold right Command to dictate (any language, pastes verbatim), or right Option to dictate Russian and paste English.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
@@ -33,11 +33,27 @@ Read these files in order — they are short and explicit:
 Conventions in this codebase:
 
 - **Single-source state**: the `state` global in `main.py` is mutated only
-  through `cas_state(expected, new)`, `set_state(new)`, `begin_processing()`,
+  through `set_state(new)`, `_begin_recording(keycode, mode)`,
+  `_abandon_recording_cycle()`, `begin_processing()`,
   `_claim_job_completion()`, and the watchdog. Any new code that decides to
   paste, delete a pending file, or animate the overlay must claim ownership
   via these primitives first; stale workers that finish after a watchdog
   reset are explicitly designed to abort silently.
+- **Per-cycle ownership**: `current_hotkey` is set in `_begin_recording` and
+  cleared in `begin_processing`/`_abandon_recording_cycle`/watchdog. A key-up
+  for a keycode that doesn't match `current_hotkey` is ignored — this is what
+  prevents tapping the OTHER hotkey mid-record from ending the cycle.
+- **Two hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) pastes the raw
+  transcript; right Option (`MODE_TRANSLATE`) routes through
+  `transcribe_and_translate_sync` (Whisper RU → Llama translate → optional
+  refine pass for outputs ≥ `REFINE_MIN_CHARS`). The mode is captured under
+  `state_lock` in `_begin_recording` and consumed by `begin_processing`; it
+  is also encoded in the pending filename (`...-{uuid}.{mode}.wav`) so a
+  crash between save and worker spawn doesn't lose the intent.
+- **Overlay color reflects intent**: `Overlay.show(mode, translate=...)` —
+  pass `translate=True` when the current cycle's mode is `MODE_TRANSLATE`.
+  The view renders violet bars/arc + a violet-tinted pill background instead
+  of the sky-blue dictate palette. Errors stay red regardless.
 - **Watchdog runs in its own thread** (`watchdog_loop`). State mutation
   happens under the lock; resource cleanup (recorder, overlay) happens
   outside the lock since those calls can block or marshal to the main loop.

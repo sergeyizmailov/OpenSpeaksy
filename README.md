@@ -95,28 +95,36 @@ To verify the service is running:
 tail -f ~/Library/Logs/com.openspeaksy/main.log
 ```
 
-You should see `OpenSpeaksy running — hold right Command to record`.
+You should see `OpenSpeaksy running — hold right Command (dictate) or right Option (Russian→English)`.
 
 ## Usage
 
-Hold **right ⌘**, speak, release. Done. The transcription pastes into the focused text field and stays in your clipboard.
+Two hotkeys:
 
-A small pill appears at the top of the screen:
-- **Animated bars** while recording
-- **Spinner** while transcribing
-- **Red `!`** if Groq returns an error
+- **Right ⌘** — dictate. Speak in any language, the text pastes verbatim.
+- **Right ⌥ (Option)** — dictate Russian, paste English. Speech is transcribed in Russian, then an LLM (`llama-3.3-70b-versatile` on Groq) translates it before pasting.
+
+Hold the key, speak, release. The text pastes into the focused field and stays in your clipboard.
+
+A small pill appears at the top of the screen. Its color tells you which mode:
+
+- **Sky blue** — dictate (right ⌘)
+- **Violet** — translate (right ⌥)
+- **Animated bars** while recording, **spinner** while transcribing (or translating), **red `!`** if Groq returns an error
 
 Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out automatically.
 
 ## Configuration
 
-### Change the hotkey
+### Change a hotkey
 
-Default is **right Command**. Edit two constants near the top of [`main.py`](main.py):
+Two pairs of constants near the top of [`main.py`](main.py) — the dictate hotkey and the Russian→English translate hotkey:
 
 ```python
-HOTKEY_KEYCODE = 0x36   # right Command
-HOTKEY_FLAG    = 0x10   # left/right distinguishing flag
+HOTKEY_KEYCODE    = 0x36   # right Command — dictate
+HOTKEY_FLAG       = 0x10
+TRANSLATE_KEYCODE = 0x3D   # right Option  — Russian → English
+TRANSLATE_FLAG    = 0x40
 ```
 
 Common alternatives:
@@ -132,6 +140,19 @@ Common alternatives:
 
 After editing, restart: `launchctl stop com.openspeaksy` (KeepAlive auto-restarts it).
 
+### Tune translate quality
+
+The translate path (right ⌥) does Whisper transcription → LLM translation → second LLM pass to polish phrasing on longer outputs. Four env vars in `~/Library/LaunchAgents/com.openspeaksy.plist` (`EnvironmentVariables`) tune it without touching code:
+
+| Variable | Default | Effect |
+|---|---|---|
+| `GROQ_MODEL` | `whisper-large-v3` | Whisper model used for both hotkeys |
+| `GROQ_TRANSLATION_MODEL` | `llama-3.3-70b-versatile` | LLM used to translate + refine |
+| `GROQ_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
+| `GROQ_WHISPER_PROMPT_RU` | generic dictation hint | Russian context prompt — set to your domain's vocabulary for better names/jargon |
+
+After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
+
 ### Rotate or change the API key
 
 Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change the `GROQ_API_KEYS` value (comma-separated for multiple keys), then:
@@ -145,7 +166,9 @@ launchctl load   ~/Library/LaunchAgents/com.openspeaksy.plist
 
 A single LaunchAgent (`com.openspeaksy`) runs `main.py`. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to `api.groq.com/openai/v1/audio/transcriptions`, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
 
-A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. If Groq is unreachable, the audio stays in `.pending/`; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
+Translate mode (right ⌥) adds two more steps: Whisper runs with `language="ru"`, then `llama-3.3-70b-versatile` translates the Russian to English. For outputs of 40+ characters, a second LLM call polishes awkward phrasing; if it errors, the first-pass translation is kept (a stiff translation is better than none).
+
+A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. The pending filename encodes which mode (`dictate` vs `translate`) recorded the audio, so recovery after a crash preserves intent. If Groq is unreachable, the audio stays in `.pending/`; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
 
 ## Performance
 
