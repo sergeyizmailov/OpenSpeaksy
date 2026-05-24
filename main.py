@@ -55,15 +55,23 @@ PENDING_AGE_WARN_DAYS = 7
 
 # Bounded log file: 2 MB × 3 files = 6 MB max ever on disk
 LOG_DIR = Path.home() / "Library/Logs/com.openspeaksy"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
 _logger = logging.getLogger("openspeaksy")
 _logger.setLevel(logging.INFO)
 _logger.propagate = False
-_handler = RotatingFileHandler(
-    LOG_DIR / "main.log", maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
-)
-_handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
-_logger.addHandler(_handler)
+
+
+def _install_file_handler():
+    """
+    Attach the rotating file handler. Called from main() — NOT at import —
+    so that pytest (which imports main for state-machine tests) can't
+    pollute the live agent's log file via the same handler.
+    """
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    handler = RotatingFileHandler(
+        LOG_DIR / "main.log", maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
+    _logger.addHandler(handler)
 
 
 def log(msg):
@@ -304,9 +312,9 @@ def process_pending_recording(path, job_id, mode):
         log(f"processing error {path.name}: {e}")
         error = True
 
-    # Claim ownership of THIS job. cas_state on its own would also accept a
-    # newer job's processing state — we need an exact job_id match so a stale
-    # worker can't paste old text into whatever the user is doing now.
+    # Claim ownership of THIS job — exact job_id match. A bare state check
+    # would also accept a *newer* job's "processing" state and let a stale
+    # worker paste old text into whatever the user is doing now.
     if not _claim_job_completion(job_id):
         log(f"stale worker abandoned: {path.name}")
         return
@@ -537,6 +545,7 @@ def run_event_tap():
 
 
 def main():
+    _install_file_handler()
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
@@ -548,7 +557,7 @@ def main():
         )
         os._exit(1)
 
-    log(f"OpenSpeaksy starting — backend: Groq cloud ({len(GROQ_API_KEYS)} key(s)), audio leaves the Mac")
+    log(f"OpenSpeaksy starting — backend: Groq cloud ({len(GROQ_API_KEYS)} key(s))")
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)

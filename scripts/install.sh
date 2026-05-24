@@ -128,8 +128,9 @@ System Settings → Privacy & Security:
 
 Using it
 
-  Hold right Command, speak, release. The transcription is pasted into the
-  focused field and stays in the clipboard.
+  Hold right Command, speak, release — dictate in any language; the text
+  pastes verbatim. Hold right Option instead to dictate in Russian and have
+  the English translation pasted. The output also stays in your clipboard.
 
   Logs:    tail -f ~/Library/Logs/com.openspeaksy/main.log
   Stop:    launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
