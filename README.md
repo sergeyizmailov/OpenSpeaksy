@@ -106,11 +106,11 @@ Two hotkeys:
 
 Hold the key, speak, release. The text pastes into the focused field and stays in your clipboard.
 
-A small pill appears at the top of the screen. Its color tells you which mode:
+A small monochrome pill appears at the top of the screen. Its theme tells you which mode:
 
-- **Sky blue** — dictate (right ⌘)
-- **Violet** — translate (right ⌥)
-- **Animated bars** while recording, **spinner** while transcribing (or translating), **red `!`** if Groq returns an error
+- **Dark graphite pill** — dictate (right ⌘)
+- **Light silver pill** — translate (right ⌥)
+- **Animated bars** while recording, **spinner** while transcribing (or translating), **coral `!`** if Groq returns an error
 
 Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out automatically.
 
@@ -198,7 +198,7 @@ Captures startup, watchdog events, errors, and recovery. Per-transcription text 
 | Hotkey ignored, nothing happens | Input Monitoring not granted to `venv/bin/python` |
 | Recording works but text doesn't paste | Accessibility not granted to the same binary |
 | No microphone prompt on first try | Microphone permission denied earlier — re-enable in System Settings |
-| Red `!` overlay every time | Groq key invalid, quota exhausted, or no internet — check the log |
+| Coral `!` overlay every time | Groq key invalid, quota exhausted, or no internet — check the log |
 | Hotkey ignored only in some apps (1Password, sudo prompts) | macOS Secure Input is active there; click out and back in |
 
 For specifics, check the [log](#logs).

@@ -50,10 +50,11 @@ Conventions in this codebase:
   `state_lock` in `_begin_recording` and consumed by `begin_processing`; it
   is also encoded in the pending filename (`...-{uuid}.{mode}.wav`) so a
   crash between save and worker spawn doesn't lose the intent.
-- **Overlay color reflects intent**: `Overlay.show(mode, translate=...)` —
+- **Overlay theme reflects intent**: `Overlay.show(mode, translate=...)` —
   pass `translate=True` when the current cycle's mode is `MODE_TRANSLATE`.
-  The view renders violet bars/arc + a violet-tinted pill background instead
-  of the sky-blue dictate palette. Errors stay red regardless.
+  The view renders the light-silver pill + graphite glyph instead of the
+  dark-graphite dictate theme (both derived from one recipe in `_init_colors`).
+  Errors show a coral `!` on a dark surface regardless.
 - **Watchdog runs in its own thread** (`watchdog_loop`). State mutation
   happens under the lock; resource cleanup (recorder, overlay) happens
   outside the lock since those calls can block or marshal to the main loop.
