@@ -106,10 +106,10 @@ Two hotkeys:
 
 Hold the key, speak, release. The text pastes into the focused field and stays in your clipboard.
 
-A small monochrome pill appears at the top of the screen. Its theme tells you which mode:
+A small dark pill appears near the bottom of the screen. Both hotkeys share the same pill; translate adds a thin **translate** label above it:
 
-- **Dark graphite pill** — dictate (right ⌘)
-- **Light silver pill** — translate (right ⌥)
+- **Pill, no label** — dictate (right ⌘)
+- **Pill with "translate" label** — translate (right ⌥)
 - **Animated bars** while recording, **spinner** while transcribing (or translating), **coral `!`** if Groq returns an error
 
 Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out automatically.

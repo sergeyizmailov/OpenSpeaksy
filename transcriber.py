@@ -1,11 +1,9 @@
 import logging
 import os
 import re
-import tempfile
 import struct
 import threading
 import json
-import wave
 from difflib import SequenceMatcher
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -169,13 +167,6 @@ def write_wav(audio, wav_path, samplerate=16000):
         f.write(b"data")
         f.write(struct.pack("<I", data_size))
         f.write(pcm.tobytes())
-
-
-def audio_to_wav(audio, samplerate=16000):
-    tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
-    tmp.close()
-    write_wav(audio, tmp.name, samplerate)
-    return tmp.name
 
 
 HALLUCINATIONS = {
@@ -367,12 +358,3 @@ class Transcriber:
 
         logger.error(f"all {len(GROQ_API_KEYS)} groq keys exhausted on {label}: {last_error}")
         raise TranscriptionError(f"all keys exhausted: {last_error}")
-
-    def transcribe_sync(self, audio):
-        wav_path = audio_to_wav(audio)
-        try:
-            return self.transcribe_wav_sync(wav_path)
-        except TranscriptionError:
-            return ""
-        finally:
-            os.unlink(wav_path)

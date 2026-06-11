@@ -42,6 +42,12 @@ fi
 
 step "Ensuring Python interpreter"
 command -v "$PYTHON_RUNTIME" &>/dev/null || brew install "${PYTHON_RUNTIME/python/python@}"
+# A freshly installed keg may not be on PATH yet (new shell hasn't sourced
+# brew shellenv) — fall back to the absolute keg path.
+if ! command -v "$PYTHON_RUNTIME" &>/dev/null; then
+    PYTHON_RUNTIME="$(brew --prefix)/bin/$PYTHON_RUNTIME"
+    command -v "$PYTHON_RUNTIME" &>/dev/null || fail "Python interpreter not found after install"
+fi
 
 # --- Groq API key -----------------------------------------------------------
 
@@ -68,7 +74,9 @@ note "Got key ending in ...${GROQ_API_KEYS: -4}"
 # --- main app venv ----------------------------------------------------------
 
 step "Creating Python venv for the app"
-"$PYTHON_RUNTIME" -m venv venv
+# --clear rebuilds a stale venv left by a previous install (e.g. after a
+# Homebrew Python upgrade broke the interpreter symlinks).
+"$PYTHON_RUNTIME" -m venv --clear venv
 # shellcheck disable=SC1091
 source venv/bin/activate
 pip install --quiet --upgrade pip
