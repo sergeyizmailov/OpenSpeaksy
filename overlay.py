@@ -4,7 +4,7 @@ import objc
 from AppKit import (
     NSView, NSPanel, NSColor, NSBezierPath, NSScreen, NSFont,
     NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,
-    NSFontWeightRegular, NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
+    NSFontWeightLight, NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
     NSWindowStyleMaskBorderless, NSBackingStoreBuffered,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary,
@@ -36,16 +36,16 @@ _EASE = None
 # translate only adds a thin "translate" label above it. The fill is a flat,
 # semi-transparent dark color (static — no blur, no adaptation), so the light
 # content always reads on it. Error keeps the dark fill and a coral glyph.
-FILL_RGBA = (0.11, 0.11, 0.11, 1.0)    # Dark pill fill — neutral gray-black
+FILL_RGBA = (36 / 255, 36 / 255, 36 / 255, 1.0)    # Dark pill fill — #242424 neutral gray-black
 EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
-BAR_RGBA = (1.0, 1.0, 1.0, 0.60)       # Bars / spinner — medium gray
+BAR_RGBA = (190 / 255, 190 / 255, 190 / 255, 1.0)    # Bars / spinner — #bebebe
 BORDER_W = 1.0
 
 # "Translate" label — small soft rounded type, in the bars/spinner color.
 LABEL_TEXT = "Translate"
 LABEL_SIZE = 9.5
 LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
-LABEL_RGBA = BAR_RGBA
+LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # "Translate" label — medium gray
 
 FILL = None
 EDGE = None
@@ -65,7 +65,7 @@ def _init_colors():
         BAR_COLOR = c(*BAR_RGBA)
         ERROR_BAR = c(236 / 255, 112 / 255, 102 / 255, 1.0)
 
-        base = NSFont.systemFontOfSize_weight_(LABEL_SIZE, NSFontWeightRegular)
+        base = NSFont.systemFontOfSize_weight_(LABEL_SIZE, NSFontWeightLight)
         rounded = base.fontDescriptor().fontDescriptorWithDesign_(NSFontDescriptorSystemDesignRounded)
         label_font = NSFont.fontWithDescriptor_size_(rounded, LABEL_SIZE) or base
         LABEL_ATTRS = {
