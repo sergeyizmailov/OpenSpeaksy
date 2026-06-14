@@ -4,7 +4,7 @@ import objc
 from AppKit import (
     NSView, NSPanel, NSColor, NSBezierPath, NSScreen, NSFont,
     NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,
-    NSFontWeightLight, NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
+    NSFontWeightRegular, NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
     NSWindowStyleMaskBorderless, NSBackingStoreBuffered,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary,
@@ -15,7 +15,7 @@ from Foundation import NSMakeRect, NSMakePoint, NSAttributedString, NSTimer
 from Quartz import CAMediaTimingFunction
 from PyObjCTools import AppHelper
 
-W, H = 90, 33
+W, H = 70, 33
 R = H / 2       # corner radius = perfect circle when the pill is H wide
 PAD = 16        # side / bottom margin around the pill
 LABEL_PAD = 18  # extra top margin for the "translate" label
@@ -41,10 +41,10 @@ EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
 BAR_RGBA = (1.0, 1.0, 1.0, 0.60)       # Bars / spinner — medium gray
 BORDER_W = 1.0
 
-# "translate" label — small, soft rounded type, in the bars/spinner color.
-LABEL_TEXT = "translate"
-LABEL_SIZE = 8.0
-LABEL_TRACKING = 0.6       # Slight letter spacing for an airy, minimal look
+# "Translate" label — small soft rounded type, in the bars/spinner color.
+LABEL_TEXT = "Translate"
+LABEL_SIZE = 9.5
+LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
 LABEL_RGBA = BAR_RGBA
 
 FILL = None
@@ -65,7 +65,7 @@ def _init_colors():
         BAR_COLOR = c(*BAR_RGBA)
         ERROR_BAR = c(236 / 255, 112 / 255, 102 / 255, 1.0)
 
-        base = NSFont.systemFontOfSize_weight_(LABEL_SIZE, NSFontWeightLight)
+        base = NSFont.systemFontOfSize_weight_(LABEL_SIZE, NSFontWeightRegular)
         rounded = base.fontDescriptor().fontDescriptorWithDesign_(NSFontDescriptorSystemDesignRounded)
         label_font = NSFont.fontWithDescriptor_size_(rounded, LABEL_SIZE) or base
         LABEL_ATTRS = {
@@ -143,6 +143,13 @@ class OverlayView(NSView):
             glyph.setWantsLayer_(True)
             self.addSubview_(glyph)
             self._glyph = glyph
+
+            # Render layers at the screen's backing scale so small text stays
+            # crisp (a layer at 1x looks pixelated on a Retina display).
+            scale = NSScreen.mainScreen().backingScaleFactor()
+            for v in (surface, glyph):
+                if v.layer() is not None:
+                    v.layer().setContentsScale_(scale)
         return self
 
     def setMode_(self, mode):
