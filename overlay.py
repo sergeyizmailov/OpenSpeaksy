@@ -36,9 +36,9 @@ _EASE = None
 # translate only adds a thin "translate" label above it. The fill is a flat,
 # semi-transparent dark color (static — no blur, no adaptation), so the light
 # content always reads on it. Error keeps the dark fill and a coral glyph.
-FILL_RGBA = (0.13, 0.13, 0.14, 1.0)    # Dark pill fill (fully opaque)
-EDGE_RGBA = (1.0, 1.0, 1.0, 0.16)      # Soft light hairline rim
-BAR_RGBA = (1.0, 1.0, 1.0, 0.86)       # Bars / spinner
+FILL_RGBA = (0.18, 0.18, 0.19, 1.0)    # Dark pill fill (fully opaque)
+EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
+BAR_RGBA = (1.0, 1.0, 1.0, 0.60)       # Bars / spinner — medium gray
 BORDER_W = 1.0
 
 # "translate" label — small, soft rounded type, in the bars/spinner color.
