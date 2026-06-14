@@ -15,7 +15,7 @@ from Foundation import NSMakeRect, NSMakePoint, NSAttributedString, NSTimer
 from Quartz import CAMediaTimingFunction
 from PyObjCTools import AppHelper
 
-W, H = 90, 28
+W, H = 90, 33
 R = H / 2       # corner radius = perfect circle when the pill is H wide
 PAD = 16        # side / bottom margin around the pill
 LABEL_PAD = 18  # extra top margin for the "translate" label
@@ -36,7 +36,7 @@ _EASE = None
 # translate only adds a thin "translate" label above it. The fill is a flat,
 # semi-transparent dark color (static — no blur, no adaptation), so the light
 # content always reads on it. Error keeps the dark fill and a coral glyph.
-FILL_RGBA = (0.18, 0.18, 0.19, 1.0)    # Dark pill fill (fully opaque)
+FILL_RGBA = (0.11, 0.11, 0.11, 1.0)    # Dark pill fill — neutral gray-black
 EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
 BAR_RGBA = (1.0, 1.0, 1.0, 0.60)       # Bars / spinner — medium gray
 BORDER_W = 1.0
