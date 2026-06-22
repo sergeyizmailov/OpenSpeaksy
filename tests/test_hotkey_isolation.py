@@ -45,7 +45,7 @@ def test_on_key_up_for_owning_hotkey_claims_transition(monkeypatch):
 
     class _StubOverlay:
         def hide(self): pass
-        def show(self, mode, translate=False): pass
+        def show(self, mode, label=None): pass
         def flash_error(self): pass
 
     monkeypatch.setattr(main, "recorder", _StubRecorder())

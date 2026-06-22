@@ -19,6 +19,11 @@ def test_translate_filename_parses():
     assert main.parse_pending_mode(p) == main.MODE_TRANSLATE
 
 
+def test_polish_filename_parses():
+    p = Path(".pending/20260523-150000-deadbeef.polish.wav")
+    assert main.parse_pending_mode(p) == main.MODE_POLISH
+
+
 def test_legacy_filename_falls_back_to_dictate():
     """Pre-upgrade WAVs (no mode segment) must still be transcribable."""
     p = Path(".pending/20260523-150000-deadbeef.wav")

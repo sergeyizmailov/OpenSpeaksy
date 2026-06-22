@@ -32,17 +32,16 @@ ALPHA_IN = 0.18
 
 _EASE = None
 
-# One component, one look. Dictate and translate are the SAME dark pill;
-# translate only adds a thin "translate" label above it. The fill is a flat,
-# semi-transparent dark color (static — no blur, no adaptation), so the light
-# content always reads on it. Error keeps the dark fill and a coral glyph.
+# One component, one look. All modes are the SAME dark pill; translate and
+# polish only add a thin text label above it (dictate has none). The fill is a
+# flat, semi-transparent dark color (static — no blur, no adaptation), so the
+# light content always reads on it. Error keeps the dark fill and a coral glyph.
 FILL_RGBA = (36 / 255, 36 / 255, 36 / 255, 1.0)    # Dark pill fill — #242424 neutral gray-black
 EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
 BAR_RGBA = (190 / 255, 190 / 255, 190 / 255, 1.0)    # Bars / spinner — #bebebe
 BORDER_W = 1.0
 
-# "Translate" label — small soft rounded type, in the bars/spinner color.
-LABEL_TEXT = "Translate"
+# Mode label ("Translate" / "Polish") — small soft rounded type.
 LABEL_SIZE = 9.5
 LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
 LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # "Translate" label — medium gray
@@ -126,7 +125,7 @@ class OverlayView(NSView):
         self = objc.super(OverlayView, self).initWithFrame_(frame)
         if self is not None:
             self._mode = None
-            self._translate = False
+            self._label = None
             self._phase = 0.0
             _init_colors()
             self.setWantsLayer_(True)
@@ -158,9 +157,9 @@ class OverlayView(NSView):
             self._phase = 0.0
             self._glyph.setNeedsDisplay_(True)
 
-    def setTranslate_(self, translate):
-        if self._translate != translate:
-            self._translate = translate
+    def setLabel_(self, label):
+        if self._label != label:
+            self._label = label
             self._glyph.setNeedsDisplay_(True)
 
     def expand(self):
@@ -194,8 +193,8 @@ class OverlayView(NSView):
         # The glyph layer spans the whole panel; the pill occupies _full_frame,
         # so the glyph is drawn in pill-local coordinates and the label sits in
         # the margin above it.
-        if self._translate and self._mode != "error":
-            s = NSAttributedString.alloc().initWithString_attributes_(LABEL_TEXT, LABEL_ATTRS)
+        if self._label and self._mode != "error":
+            s = NSAttributedString.alloc().initWithString_attributes_(self._label, LABEL_ATTRS)
             sz = s.size()
             x = (PANEL_W - sz.width) / 2.0
             y = PAD + H + (LABEL_PAD - sz.height) / 2.0
@@ -251,8 +250,8 @@ class Overlay:
         # flash time, so a flash can never hide a cycle that started after it.
         self._gen = 0
 
-    def show(self, mode, translate=False):
-        AppHelper.callAfter(self._show, mode, translate)
+    def show(self, mode, label=None):
+        AppHelper.callAfter(self._show, mode, label)
 
     def flash_error(self, duration=1.2):
         AppHelper.callAfter(self._flash_error, duration)
@@ -261,7 +260,7 @@ class Overlay:
         AppHelper.callAfter(self._hide)
 
     def _flash_error(self, duration):
-        self._show("error", False)
+        self._show("error", None)
         gen = self._gen
         threading.Timer(
             duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)
@@ -310,7 +309,7 @@ class Overlay:
         self._panel = panel
         self._view = view
 
-    def _show(self, mode, translate):
+    def _show(self, mode, label):
         _init_colors()
         self._ensure_panel()
         self._hiding = False
@@ -318,7 +317,7 @@ class Overlay:
 
         x, y = self._center()
         self._panel.setFrameOrigin_(NSMakePoint(x - PAD, y - PAD))
-        self._view.setTranslate_(translate)
+        self._view.setLabel_(label)
         self._view.setMode_(mode)
 
         # The redraw timer runs only while the pill is visible.

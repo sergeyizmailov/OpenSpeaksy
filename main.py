@@ -34,8 +34,13 @@ HOTKEY_KEYCODE   = 0x36   # right Command
 HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
 TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
 TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
+POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian or Polish, paste Polish
+POLISH_FLAG    = 0x200  # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
+MODE_POLISH    = "polish"
+# Overlay label per mode; dictate has none.
+MODE_LABELS = {MODE_TRANSLATE: "Translate", MODE_POLISH: "Polish"}
 V_KEY = 0x09
 MIN_AUDIO_SAMPLES = 16000
 PB_TYPE = "public.utf8-plain-text"
@@ -260,7 +265,7 @@ def parse_pending_mode(path):
     or MODE_DICTATE for legacy files (pre-upgrade) with no mode segment.
     """
     stem = path.stem  # strips final .wav
-    for mode in (MODE_TRANSLATE, MODE_DICTATE):
+    for mode in (MODE_TRANSLATE, MODE_POLISH, MODE_DICTATE):
         if stem.endswith(f".{mode}"):
             return mode
     return MODE_DICTATE
@@ -303,6 +308,8 @@ def process_pending_recording(path, job_id, mode):
     try:
         if mode == MODE_TRANSLATE:
             text = transcriber.transcribe_and_translate_sync(path)
+        elif mode == MODE_POLISH:
+            text = transcriber.transcribe_to_polish_sync(path)
         else:
             text = transcriber.transcribe_wav_sync(path)
     except TranscriptionError as e:
@@ -379,6 +386,8 @@ def recover_pending_recordings():
         try:
             if mode == MODE_TRANSLATE:
                 text = transcriber.transcribe_and_translate_sync(path)
+            elif mode == MODE_POLISH:
+                text = transcriber.transcribe_to_polish_sync(path)
             else:
                 text = transcriber.transcribe_wav_sync(path)
         except TranscriptionError as e:
@@ -445,7 +454,7 @@ def on_key_down(keycode, mode):
         return
     try:
         recorder.start()
-        overlay.show("recording", translate=(mode == MODE_TRANSLATE))
+        overlay.show("recording", label=MODE_LABELS.get(mode))
     except Exception as e:
         log(f"recorder.start error: {e}")
         overlay.hide()
@@ -487,7 +496,7 @@ def on_key_up(keycode):
         set_state("idle")
         return
 
-    overlay.show("loading", translate=(mode == MODE_TRANSLATE))
+    overlay.show("loading", label=MODE_LABELS.get(mode))
     threading.Thread(target=process_pending_recording, args=(wav_path, job_id, mode), daemon=True).start()
 
 
@@ -513,6 +522,12 @@ def tap_callback(proxy, event_type, event, refcon):
             pressed = bool(CGEventGetFlags(event) & TRANSLATE_FLAG)
             if pressed:
                 on_key_down(keycode, MODE_TRANSLATE)
+            else:
+                on_key_up(keycode)
+        elif keycode == POLISH_KEYCODE:
+            pressed = bool(CGEventGetFlags(event) & POLISH_FLAG)
+            if pressed:
+                on_key_down(keycode, MODE_POLISH)
             else:
                 on_key_up(keycode)
     except Exception as e:
@@ -570,7 +585,7 @@ def main():
     threading.Thread(target=run_event_tap, daemon=True).start()
     time.sleep(0.1)
 
-    log("OpenSpeaksy running — hold right Command (dictate) or right Option (Russian→English)")
+    log("OpenSpeaksy running — hold right Command (dictate), right Option (Russian→English), or right Shift (→Polish)")
     AppHelper.runEventLoop()
 
 
