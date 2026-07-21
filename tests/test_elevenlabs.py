@@ -84,18 +84,6 @@ def test_scribe_v2_remains_available(monkeypatch, tmp_path):
     assert b"\r\nfalse\r\n" in captured["body"]
 
 
-def test_groq_stt_backend_is_a_real_fallback(monkeypatch, tmp_path):
-    import transcriber as module
-
-    wav = _write_silent_wav(tmp_path)
-    monkeypatch.setattr(module, "STT_BACKEND", "groq")
-    with patch.object(module.Transcriber, "_transcribe_groq", return_value="fallback") as groq:
-        result = module.Transcriber().transcribe_wav_sync(wav, language="ru")
-
-    assert result == "fallback "
-    groq.assert_called_once_with(wav, language="ru")
-
-
 def test_polish_mode_can_route_stt_to_elevenlabs(monkeypatch, tmp_path):
     import transcriber as module
 
@@ -107,7 +95,7 @@ def test_polish_mode_can_route_stt_to_elevenlabs(monkeypatch, tmp_path):
         patch.object(
             module.Transcriber, "_transcribe_elevenlabs", return_value="Cześć"
         ) as elevenlabs,
-        patch.object(module.Transcriber, "_polish_groq", return_value="Cześć") as polish,
+        patch.object(module.Transcriber, "_polish_mistral", return_value="Cześć") as polish,
     ):
         result = module.Transcriber().transcribe_to_polish_sync(wav)
 
@@ -127,7 +115,7 @@ def test_polish_mode_mirrors_translate_mode_with_russian_mistral(monkeypatch, tm
             module.Transcriber, "_transcribe_mistral", return_value="Как дела?"
         ) as mistral,
         patch.object(
-            module.Transcriber, "_polish_groq", return_value="Jak się masz?"
+            module.Transcriber, "_polish_mistral", return_value="Jak się masz?"
         ) as polish,
     ):
         result = module.Transcriber().transcribe_to_polish_sync(wav)
@@ -147,12 +135,12 @@ def test_unknown_stt_backend_fails_clearly(monkeypatch, tmp_path):
         module.Transcriber().transcribe_wav_sync(wav)
 
 
-def test_missing_groq_key_fails_clearly(monkeypatch):
+def test_missing_mistral_key_fails_clearly(monkeypatch):
     import transcriber as module
 
-    monkeypatch.setattr(module, "GROQ_API_KEYS", [])
-    with pytest.raises(module.TranscriptionError, match="Groq API key"):
-        module.Transcriber()._translate_groq("text")
+    monkeypatch.setattr(module, "MISTRAL_API_KEY", "")
+    with pytest.raises(module.TranscriptionError, match="Mistral API key"):
+        module.Transcriber()._translate_mistral("text")
 
 
 def test_multipart_boundary_is_unique_per_request(monkeypatch, tmp_path):

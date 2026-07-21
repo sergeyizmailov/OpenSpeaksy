@@ -1,7 +1,6 @@
 """
 Russian→English translate path: language passthrough on transcription,
-LLM call shape, key rotation on chat-completions, empty-transcript
-short-circuit.
+Mistral chat-completion shape, provider errors, and empty-transcript short-circuit.
 """
 import io
 import json
@@ -13,7 +12,7 @@ import pytest
 
 
 def _http_error(code):
-    return HTTPError("https://api.groq.com/", code, "test", {}, io.BytesIO(b""))
+    return HTTPError("https://api.mistral.ai/", code, "test", {}, io.BytesIO(b""))
 
 
 def _ok_transcribe(text):
@@ -34,8 +33,7 @@ def _ok_chat(content):
 def transcriber_module(monkeypatch):
     monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "elevenlabs")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
-    monkeypatch.setenv("GROQ_API_KEYS", "k1,k2,k3")
-    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
     import importlib
     import transcriber as t
     importlib.reload(t)
@@ -90,7 +88,7 @@ def test_language_omitted_by_default(transcriber_module, tmp_path):
     assert b'name="language_code"' not in captured["body"]
 
 
-def test_translate_groq_posts_chat_completions(transcriber_module):
+def test_translate_mistral_posts_chat_completions(transcriber_module):
     t = transcriber_module
     captured = {}
 
@@ -98,15 +96,17 @@ def test_translate_groq_posts_chat_completions(transcriber_module):
         captured["url"] = req.full_url
         captured["body"] = json.loads(req.data.decode())
         captured["ct"] = req.headers.get("Content-type")
+        captured["authorization"] = req.headers.get("Authorization")
         return _ok_chat("Hello world")
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        result = t.Transcriber()._translate_groq("Привет мир")
+        result = t.Transcriber()._translate_mistral("Привет мир")
 
     assert result == "Hello world"
-    assert captured["url"] == "https://api.groq.com/openai/v1/chat/completions"
+    assert captured["url"] == "https://api.mistral.ai/v1/chat/completions"
     assert captured["ct"] == "application/json"
-    assert captured["body"]["model"] == "llama-3.3-70b-versatile"
+    assert captured["authorization"] == "Bearer mistral-test-key"
+    assert captured["body"]["model"] == "mistral-medium-3-5"
     # Bumped from 0.0 for more natural phrasing on conversational speech.
     assert captured["body"]["temperature"] == 0.2
     msgs = captured["body"]["messages"]
@@ -115,21 +115,15 @@ def test_translate_groq_posts_chat_completions(transcriber_module):
     assert msgs[1] == {"role": "user", "content": "Привет мир"}
 
 
-def test_translate_rotates_on_429(transcriber_module):
+def test_translate_429_propagates(transcriber_module):
     t = transcriber_module
-    calls = []
 
     def fake_urlopen(req, timeout):
-        calls.append(req.headers.get("Authorization"))
-        if len(calls) < 3:
-            raise _http_error(429)
-        return _ok_chat("ok")
+        raise _http_error(429)
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        result = t.Transcriber()._translate_groq("текст")
-
-    assert result == "ok"
-    assert calls == ["Bearer k1", "Bearer k2", "Bearer k3"]
+        with pytest.raises(t.TranscriptionError):
+            t.Transcriber()._translate_mistral("текст")
 
 
 def test_translate_500_propagates(transcriber_module):
@@ -140,7 +134,7 @@ def test_translate_500_propagates(transcriber_module):
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
         with pytest.raises(t.TranscriptionError):
-            t.Transcriber()._translate_groq("текст")
+            t.Transcriber()._translate_mistral("текст")
 
 
 def test_transcribe_and_translate_skips_llm_on_empty(transcriber_module, tmp_path):

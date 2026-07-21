@@ -29,10 +29,9 @@ from transcriber import (
     DICTATE_LANGUAGE,
     ELEVENLABS_API_KEY,
     ELEVENLABS_MODEL,
-    GROQ_API_KEYS,
-    GROQ_MODEL,
     MISTRAL_API_KEY,
     MISTRAL_MODEL,
+    MISTRAL_TRANSLATION_MODEL,
     POLISH_STT_BACKEND,
     STT_BACKEND,
     SUPPORTED_STT_BACKENDS,
@@ -624,18 +623,12 @@ def main():
             "and reload."
         )
         os._exit(1)
-    if STT_BACKEND == "mistral" and not MISTRAL_API_KEY:
+    if not MISTRAL_API_KEY:
         log(
-            "FATAL: no Mistral API key configured. Set MISTRAL_API_KEY in "
+            "FATAL: no Mistral API key configured; transcription and translation "
+            "require it. Set MISTRAL_API_KEY in "
             "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
             "and reload."
-        )
-        os._exit(1)
-    if not GROQ_API_KEYS:
-        log(
-            "FATAL: no Groq API key configured; translation modes require it. Set "
-            "GROQ_API_KEYS in ~/Library/LaunchAgents/com.openspeaksy.plist "
-            "(EnvironmentVariables) and reload."
         )
         os._exit(1)
     if POLISH_STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
@@ -644,13 +637,11 @@ def main():
     if POLISH_STT_BACKEND == "mistral" and not MISTRAL_API_KEY:
         log("FATAL: Polish STT backend is Mistral but its API key is not configured")
         os._exit(1)
-    translator = f"Groq LLM ({len(GROQ_API_KEYS)} key(s))"
+    translator = f"Mistral {MISTRAL_TRANSLATION_MODEL}"
     if STT_BACKEND == "mistral":
         stt = f"Mistral {MISTRAL_MODEL}"
     elif STT_BACKEND == "elevenlabs":
         stt = f"ElevenLabs {ELEVENLABS_MODEL}"
-    else:
-        stt = f"Groq {GROQ_MODEL}"
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
         f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "

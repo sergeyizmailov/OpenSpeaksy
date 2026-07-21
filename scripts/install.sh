@@ -3,16 +3,15 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Requires Mistral and Groq API keys and optionally accepts an ElevenLabs key,
-# then writes them into the plist's EnvironmentVariables. Mistral Voxtral
-# handles transcription, Groq powers translations, and ElevenLabs remains a
-# selectable fallback.
+# Requires one Mistral API key and optionally accepts an ElevenLabs key, then
+# writes them into the plist's EnvironmentVariables. Mistral Voxtral handles
+# transcription, Mistral Medium handles translations, and ElevenLabs remains a
+# selectable speech-to-text fallback.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
 #          MISTRAL_API_KEY=key      (skip the Mistral prompt)
 #          ELEVENLABS_API_KEY=key   (optional retained fallback)
-#          GROQ_API_KEYS=key1,key2  (skip the Groq prompt)
 
 set -euo pipefail
 
@@ -58,7 +57,8 @@ fi
 step "Configuring Mistral API key"
 if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses Mistral Voxtral Mini Transcribe 2 for speech-to-text.
+    OpenSpeaksy uses Mistral Voxtral Mini Transcribe 2 for speech-to-text and
+    Mistral Medium for Russian-to-English and Russian-to-Polish translation.
     Create an API key at: https://console.mistral.ai/api-keys
 
     The key is written only into your local plist
@@ -90,26 +90,6 @@ else
     note "ElevenLabs fallback not configured"
 fi
 
-step "Configuring Groq API key"
-if [[ -z "${GROQ_API_KEYS:-}" ]]; then
-    cat <<EOF
-    Groq powers Russian-to-English and Russian-to-Polish translation.
-    Get a free API key at: https://console.groq.com/keys
-
-    The key is written only into your local plist
-    ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
-    For multiple keys with rotation, paste them comma-separated.
-
-EOF
-    # -s hides the input so the secret doesn't end up in shell scrollback or
-    # screen-share recordings. Echo a confirmation with only the last 4 chars
-    # so the user can sanity-check they pasted the right key.
-    read -rs -p "    Paste your Groq API key(s): " GROQ_API_KEYS
-    echo
-fi
-[[ -n "$GROQ_API_KEYS" ]] || fail "no Groq API key provided"
-note "Got key ending in ...${GROQ_API_KEYS: -4}"
-
 # --- main app venv ----------------------------------------------------------
 
 step "Creating Python venv for the app"
@@ -130,7 +110,6 @@ mkdir -p "$LAUNCH_AGENTS"
 # Use Python's plistlib so paths and key values with XML-sensitive characters
 # are escaped correctly — sed-substitution would corrupt the plist.
 MISTRAL_API_KEY="$MISTRAL_API_KEY" ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" \
-GROQ_API_KEYS="$GROQ_API_KEYS" \
 "$PYTHON_RUNTIME" - "$PROJECT_ROOT/launchd/${LABEL_APP}.plist.template" \
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
                     "$PROJECT_ROOT" <<'PYEOF'
@@ -138,7 +117,6 @@ import os, sys, plistlib
 template, target, project_root = sys.argv[1:4]
 mistral_key = os.environ.pop("MISTRAL_API_KEY")
 elevenlabs_key = os.environ.pop("ELEVENLABS_API_KEY")
-groq_keys = os.environ.pop("GROQ_API_KEYS")
 with open(template, "rb") as f:
     pl = plistlib.load(f)
 
@@ -150,8 +128,7 @@ def replace(node):
     if isinstance(node, str):
         return (node.replace("__PROJECT_ROOT__", project_root)
                     .replace("__MISTRAL_API_KEY__", mistral_key)
-                    .replace("__ELEVENLABS_API_KEY__", elevenlabs_key)
-                    .replace("__GROQ_API_KEYS__", groq_keys))
+                    .replace("__ELEVENLABS_API_KEY__", elevenlabs_key))
     return node
 
 # Open with 0600 from the start so the API key is never world-readable,

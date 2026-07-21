@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import struct
-import threading
 import uuid
 import wave
 from difflib import SequenceMatcher
@@ -17,7 +16,7 @@ logger = logging.getLogger("openspeaksy")
 REQUEST_TIMEOUT_SEC = 120
 SILENCE_RMS_THRESHOLD = 0.001
 STT_BACKEND = os.environ.get("OPENSPEAKSY_STT_BACKEND", "mistral").strip().lower()
-SUPPORTED_STT_BACKENDS = {"mistral", "elevenlabs", "groq"}
+SUPPORTED_STT_BACKENDS = {"mistral", "elevenlabs"}
 DICTATE_LANGUAGE = os.environ.get("OPENSPEAKSY_DICTATE_LANGUAGE", "").strip() or None
 POLISH_STT_BACKEND = (
     os.environ.get("OPENSPEAKSY_POLISH_STT_BACKEND", STT_BACKEND).strip().lower()
@@ -26,7 +25,11 @@ POLISH_STT_BACKEND = (
 # Primary speech-to-text backend.
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "").strip()
 MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/audio/transcriptions"
+MISTRAL_CHAT_ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "voxtral-mini-2602")
+MISTRAL_TRANSLATION_MODEL = os.environ.get(
+    "MISTRAL_TRANSLATION_MODEL", "mistral-medium-3-5"
+)
 
 # Retained speech-to-text fallback.
 ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY", "").strip()
@@ -38,22 +41,11 @@ ELEVENLABS_LANGUAGE_CODES = {
     "ru": "rus",
 }
 
-# Comma-separated list — multiple keys are rotated on HTTP 401/403/429.
-# Single GROQ_API_KEY is also accepted for convenience. Groq remains the LLM
-# backend for Russian-to-English/Polish translation; _transcribe_groq is retained
-# so switching the STT backend back later remains a small configuration change.
-GROQ_API_KEYS = [k.strip() for k in os.environ.get("GROQ_API_KEYS", "").split(",") if k.strip()]
-if not GROQ_API_KEYS:
-    _single = os.environ.get("GROQ_API_KEY", "").strip()
-    if _single:
-        GROQ_API_KEYS = [_single]
-GROQ_ENDPOINT = "https://api.groq.com/openai/v1/audio/transcriptions"
-GROQ_CHAT_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
-GROQ_MODEL = os.environ.get("GROQ_MODEL", "whisper-large-v3")
-GROQ_TRANSLATION_MODEL = os.environ.get("GROQ_TRANSLATION_MODEL", "llama-3.3-70b-versatile")
 # Temperature 0.0 produces stiff, word-by-word output for conversational speech.
 # A small bump trades a bit of determinism for noticeably more natural phrasing.
-TRANSLATION_TEMPERATURE = float(os.environ.get("GROQ_TRANSLATION_TEMPERATURE", "0.2"))
+TRANSLATION_TEMPERATURE = float(
+    os.environ.get("MISTRAL_TRANSLATION_TEMPERATURE", "0.2")
+)
 # Two-pass refinement adds a second LLM call to polish awkward phrasings.
 # Skipped for short utterances where refinement adds latency without real benefit.
 REFINE_MIN_CHARS = 40
@@ -135,29 +127,8 @@ POLISH_REFINEMENT_SYSTEM_PROMPT = (
     "No explanations, no quotes, no commentary, no answers."
 )
 
-_groq_key_index = 0
-_groq_key_lock = threading.Lock()
-
-
-def _current_groq_key():
-    with _groq_key_lock:
-        return GROQ_API_KEYS[_groq_key_index]
-
-
-def _rotate_groq_key():
-    global _groq_key_index
-    with _groq_key_lock:
-        _groq_key_index = (_groq_key_index + 1) % len(GROQ_API_KEYS)
-        return GROQ_API_KEYS[_groq_key_index]
-
-
 class TranscriptionError(Exception):
     pass
-
-
-def _require_groq_keys():
-    if not GROQ_API_KEYS:
-        raise TranscriptionError("Groq API key is not configured")
 
 
 def _multipart_wav_body(wav_data, fields, label):
@@ -298,8 +269,6 @@ class Transcriber:
             text = self._transcribe_mistral(wav_path, language=language)
         elif selected_backend == "elevenlabs":
             text = self._transcribe_elevenlabs(wav_path, language=language)
-        elif selected_backend == "groq":
-            text = self._transcribe_groq(wav_path, language=language)
         else:
             raise TranscriptionError(f"unsupported STT backend: {selected_backend}")
 
@@ -326,7 +295,7 @@ class Transcriber:
         ).rstrip()
         if not russian:
             return ""
-        english = self._translate_groq(russian)
+        english = self._translate_mistral(russian)
         if not english:
             return ""
         # Second pass polishes awkward phrasings. Short utterances (greetings,
@@ -335,7 +304,7 @@ class Transcriber:
         # a stiff translation is better than no translation.
         if len(english) >= REFINE_MIN_CHARS:
             try:
-                refined = self._refine_translation_groq(english)
+                refined = self._refine_translation_mistral(english)
                 if refined:
                     english = refined
             except TranscriptionError as e:
@@ -351,7 +320,7 @@ class Transcriber:
         ).rstrip()
         if not source:
             return ""
-        polish = self._polish_groq(source)
+        polish = self._polish_mistral(source)
         if not polish:
             return ""
         # Second pass polishes remaining grammar/naturalness. Short utterances
@@ -359,17 +328,17 @@ class Transcriber:
         # back to the first pass — a stiff translation beats none.
         if len(polish) >= REFINE_MIN_CHARS:
             try:
-                refined = self._refine_polish_groq(polish)
+                refined = self._refine_polish_mistral(polish)
                 if refined:
                     polish = refined
             except TranscriptionError as e:
                 logger.warning(f"polish refinement failed, using first-pass: {e}")
         return polish + " "
 
-    def _polish_groq(self, text):
+    def _polish_mistral(self, text):
         return self._chat_completion(POLISH_SYSTEM_PROMPT, text, label="polish")
 
-    def _refine_polish_groq(self, text):
+    def _refine_polish_mistral(self, text):
         return self._chat_completion(POLISH_REFINEMENT_SYSTEM_PROMPT, text, label="polish-refine")
 
     def _transcribe_mistral(self, wav_path, language=None):
@@ -446,68 +415,17 @@ class Transcriber:
             logger.error(f"ElevenLabs transcribe error: {e}")
             raise TranscriptionError(str(e)) from e
 
-    def _transcribe_groq(self, wav_path, language=None):
-        _require_groq_keys()
-        with open(wav_path, "rb") as f:
-            wav_data = f.read()
-
-        fields = [
-            ("model", GROQ_MODEL),
-            ("response_format", "json"),
-            ("temperature", "0.0"),
-        ]
-        if language:
-            fields.append(("language", language))
-        boundary, body = _multipart_wav_body(wav_data, fields, "Groq")
-
-        # Try each key in turn. Rotate on auth/rate-limit; other errors propagate.
-        last_error = None
-        key = _current_groq_key()
-        for attempt in range(len(GROQ_API_KEYS)):
-            try:
-                req = Request(
-                    GROQ_ENDPOINT,
-                    data=body,
-                    headers={
-                        "Content-Type": f"multipart/form-data; boundary={boundary.decode()}",
-                        "Authorization": f"Bearer {key}",
-                        # Default Python-urllib UA gets 403'd by Groq's WAF.
-                        "User-Agent": "openspeaksy/1.0",
-                    },
-                )
-                resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
-                result = json.loads(resp.read().decode())
-                return result.get("text", "").strip()
-            except HTTPError as e:
-                if e.code in (401, 403, 429) and len(GROQ_API_KEYS) > 1:
-                    logger.warning(
-                        f"groq key {attempt + 1}/{len(GROQ_API_KEYS)} got HTTP {e.code}, rotating"
-                    )
-                    last_error = e
-                    key = _rotate_groq_key()
-                    continue
-                logger.error(f"groq HTTP {e.code}: {e}")
-                raise TranscriptionError(str(e)) from e
-            except URLError as e:
-                logger.error(f"groq error: {e}")
-                raise TranscriptionError(str(e)) from e
-            except Exception as e:
-                logger.error(f"groq transcribe error: {e}")
-                raise TranscriptionError(str(e)) from e
-
-        logger.error(f"all {len(GROQ_API_KEYS)} groq keys exhausted: {last_error}")
-        raise TranscriptionError(f"all keys exhausted: {last_error}")
-
-    def _translate_groq(self, russian_text):
+    def _translate_mistral(self, russian_text):
         return self._chat_completion(TRANSLATION_SYSTEM_PROMPT, russian_text, label="translate")
 
-    def _refine_translation_groq(self, english_text):
+    def _refine_translation_mistral(self, english_text):
         return self._chat_completion(REFINEMENT_SYSTEM_PROMPT, english_text, label="refine")
 
     def _chat_completion(self, system_prompt, user_text, label):
-        _require_groq_keys()
+        if not MISTRAL_API_KEY:
+            raise TranscriptionError("Mistral API key is not configured")
         payload = json.dumps({
-            "model": GROQ_TRANSLATION_MODEL,
+            "model": MISTRAL_TRANSLATION_MODEL,
             "temperature": TRANSLATION_TEMPERATURE,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -515,41 +433,28 @@ class Transcriber:
             ],
         }).encode()
 
-        last_error = None
-        key = _current_groq_key()
-        for attempt in range(len(GROQ_API_KEYS)):
-            try:
-                req = Request(
-                    GROQ_CHAT_ENDPOINT,
-                    data=payload,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {key}",
-                        "User-Agent": "openspeaksy/1.0",
-                    },
-                )
-                resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
-                result = json.loads(resp.read().decode())
-                choices = result.get("choices", [])
-                if not choices:
-                    return ""
-                return choices[0].get("message", {}).get("content", "").strip()
-            except HTTPError as e:
-                if e.code in (401, 403, 429) and len(GROQ_API_KEYS) > 1:
-                    logger.warning(
-                        f"groq key {attempt + 1}/{len(GROQ_API_KEYS)} got HTTP {e.code} on {label}, rotating"
-                    )
-                    last_error = e
-                    key = _rotate_groq_key()
-                    continue
-                logger.error(f"groq {label} HTTP {e.code}: {e}")
-                raise TranscriptionError(str(e)) from e
-            except URLError as e:
-                logger.error(f"groq {label} error: {e}")
-                raise TranscriptionError(str(e)) from e
-            except Exception as e:
-                logger.error(f"groq {label} error: {e}")
-                raise TranscriptionError(str(e)) from e
-
-        logger.error(f"all {len(GROQ_API_KEYS)} groq keys exhausted on {label}: {last_error}")
-        raise TranscriptionError(f"all keys exhausted: {last_error}")
+        try:
+            req = Request(
+                MISTRAL_CHAT_ENDPOINT,
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {MISTRAL_API_KEY}",
+                    "User-Agent": "openspeaksy/1.0",
+                },
+            )
+            resp = urlopen(req, timeout=REQUEST_TIMEOUT_SEC)
+            result = json.loads(resp.read().decode())
+            choices = result.get("choices", [])
+            if not choices:
+                return ""
+            return choices[0].get("message", {}).get("content", "").strip()
+        except HTTPError as e:
+            logger.error(f"Mistral {label} HTTP {e.code}: {e}")
+            raise TranscriptionError(str(e)) from e
+        except URLError as e:
+            logger.error(f"Mistral {label} error: {e}")
+            raise TranscriptionError(str(e)) from e
+        except Exception as e:
+            logger.error(f"Mistral {label} error: {e}")
+            raise TranscriptionError(str(e)) from e

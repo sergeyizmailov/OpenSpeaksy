@@ -7,7 +7,7 @@ focused on macOS dictation — please read this before opening a PR.
 
 - macOS reliability and UX improvements
 - New hotkey / overlay options
-- Mistral/ElevenLabs/Groq integration tweaks (rate-limit handling, model parameters)
+- Mistral/ElevenLabs integration tweaks (rate-limit handling, model parameters)
 - Documentation, install-script fixes, packaging
 - Bug fixes with a clear repro
 

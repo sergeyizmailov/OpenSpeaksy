@@ -7,12 +7,12 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
 2. Make sure the user has a Mistral API key. If not, send them to
-   <https://console.mistral.ai/api-keys>. A Groq API key is also
-   required for the Russian-to-English and Russian-to-Polish modes.
+   <https://console.mistral.ai/api-keys>. The same key powers Voxtral
+   transcription and Mistral Medium translation.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
    keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
    `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
-   and `GROQ_API_KEYS=...` in the environment before running to skip prompts;
+   in the environment before running to skip its prompt;
    `ELEVENLABS_API_KEY=...` optionally retains the Scribe v2 fallback.
 4. After install, the user must manually grant **Input Monitoring** and
    **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
@@ -28,7 +28,7 @@ Read these files in order — they are short and explicit:
 
 - `main.py` — entry point, state machine, key handling, paste, watchdog, recovery
 - `recorder.py` — PortAudio capture
-- `transcriber.py` — Mistral/ElevenLabs/Groq STT plus Groq LLM client with multi-key rotation
+- `transcriber.py` — Mistral/ElevenLabs STT plus the Mistral Medium translation client
 - `overlay.py` — NSPanel pill overlay
 - `launchd/com.openspeaksy.plist.template` — LaunchAgent definition
 
@@ -58,7 +58,7 @@ Conventions in this codebase:
 - **Per-mode STT routing**: `OPENSPEAKSY_DICTATE_LANGUAGE` optionally forces a
   language hint for right Command; right Option always requests Russian;
   `OPENSPEAKSY_POLISH_STT_BACKEND` independently selects the right-Shift STT
-  provider; right Shift still forces Russian before the Groq Polish translation.
+  provider; right Shift still forces Russian before the Mistral Polish translation.
 - **Overlay labels reflect intent**: call `Overlay.show(mode, label=...)` with
   the value from `MODE_LABELS`. All modes share the same flat dark pill;
   translate modes add `English` or `Polish` above it. Errors show a coral `!`.
@@ -78,9 +78,9 @@ Conventions in this codebase:
   files and quarantines corrupt WAVs to `.pending/quarantine/`.
 - **Permissions**: `.pending/` is `0700`, files are `0600`. Don't loosen
   this without thinking about what dictated audio leaks imply.
-- **Groq quirks**: the `Authorization: Bearer ...` header is required, and
-  the default Python `urllib` User-Agent gets HTTP 403 from Groq's WAF —
-  override with any non-default value (we use `openspeaksy/1.0`).
+- **One required provider key**: `MISTRAL_API_KEY` authenticates both Voxtral
+  transcription and Mistral Medium translation. ElevenLabs is optional and is
+  used only when explicitly selected as an STT backend.
 
 If you change the LaunchAgent label (`com.openspeaksy`), also update
 `LOG_DIR` in `main.py` and the launchctl commands in scripts/install.sh

@@ -21,14 +21,14 @@
         <string>__MISTRAL_API_KEY__</string>
         <key>MISTRAL_MODEL</key>
         <string>voxtral-mini-2602</string>
+        <key>MISTRAL_TRANSLATION_MODEL</key>
+        <string>mistral-medium-3-5</string>
         <key>OPENSPEAKSY_DICTATE_LANGUAGE</key>
         <string></string>
         <key>OPENSPEAKSY_POLISH_STT_BACKEND</key>
         <string>mistral</string>
         <key>ELEVENLABS_API_KEY</key>
         <string>__ELEVENLABS_API_KEY__</string>
-        <key>GROQ_API_KEYS</key>
-        <string>__GROQ_API_KEYS__</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
