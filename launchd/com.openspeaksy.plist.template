@@ -16,7 +16,15 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>OPENSPEAKSY_STT_BACKEND</key>
-        <string>elevenlabs</string>
+        <string>mistral</string>
+        <key>MISTRAL_API_KEY</key>
+        <string>__MISTRAL_API_KEY__</string>
+        <key>MISTRAL_MODEL</key>
+        <string>voxtral-mini-2602</string>
+        <key>OPENSPEAKSY_DICTATE_LANGUAGE</key>
+        <string></string>
+        <key>OPENSPEAKSY_POLISH_STT_BACKEND</key>
+        <string>mistral</string>
         <key>ELEVENLABS_API_KEY</key>
         <string>__ELEVENLABS_API_KEY__</string>
         <key>GROQ_API_KEYS</key>

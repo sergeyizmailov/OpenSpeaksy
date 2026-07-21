@@ -7,7 +7,7 @@ focused on macOS dictation — please read this before opening a PR.
 
 - macOS reliability and UX improvements
 - New hotkey / overlay options
-- ElevenLabs/Groq integration tweaks (rate-limit handling, model parameters)
+- Mistral/ElevenLabs/Groq integration tweaks (rate-limit handling, model parameters)
 - Documentation, install-script fixes, packaging
 - Bug fixes with a clear repro
 
@@ -55,7 +55,7 @@ input catches these without affecting genuinely distinct sentences.
 Open an issue with:
 
 - macOS version + Apple Silicon / Intel
-- STT backend and model (`elevenlabs` / `scribe_v2` by default)
+- STT backend and model (`mistral` / `voxtral-mini-2602` by default)
 - Reproduction steps
 - Relevant lines from `~/Library/Logs/com.openspeaksy/main.log`
 

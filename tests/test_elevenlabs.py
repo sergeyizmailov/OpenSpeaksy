@@ -20,7 +20,40 @@ def _write_silent_wav(tmp_path):
     return path
 
 
-def test_scribe_v2_is_primary_transcriber(monkeypatch, tmp_path):
+def test_voxtral_mini_2602_is_primary_transcriber(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
+    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
+    import importlib
+    import transcriber as module
+
+    importlib.reload(module)
+    wav = _write_silent_wav(tmp_path)
+    captured = {}
+
+    class Response:
+        def read(self):
+            return json.dumps({"text": "hello"}).encode()
+
+    def fake_urlopen(request, timeout):
+        captured["url"] = request.full_url
+        captured["authorization"] = request.headers.get("Authorization")
+        captured["body"] = request.data
+        return Response()
+
+    with patch.object(module, "urlopen", side_effect=fake_urlopen):
+        result = module.Transcriber().transcribe_wav_sync(wav, language="ru")
+
+    assert result == "hello "
+    assert captured["url"] == "https://api.mistral.ai/v1/audio/transcriptions"
+    assert captured["authorization"] == "Bearer mistral-test-key"
+    assert b'name="model"' in captured["body"]
+    assert b"\r\nvoxtral-mini-2602\r\n" in captured["body"]
+    assert b'name="language"' in captured["body"]
+    assert b"\r\nru\r\n" in captured["body"]
+
+
+def test_scribe_v2_remains_available(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "elevenlabs")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
     import importlib
     import transcriber as module
@@ -61,6 +94,47 @@ def test_groq_stt_backend_is_a_real_fallback(monkeypatch, tmp_path):
 
     assert result == "fallback "
     groq.assert_called_once_with(wav, language="ru")
+
+
+def test_polish_mode_can_route_stt_to_elevenlabs(monkeypatch, tmp_path):
+    import transcriber as module
+
+    wav = _write_silent_wav(tmp_path)
+    monkeypatch.setattr(module, "STT_BACKEND", "mistral")
+    monkeypatch.setattr(module, "POLISH_STT_BACKEND", "elevenlabs")
+    with (
+        patch.object(module.Transcriber, "_transcribe_mistral") as mistral,
+        patch.object(
+            module.Transcriber, "_transcribe_elevenlabs", return_value="Cześć"
+        ) as elevenlabs,
+        patch.object(module.Transcriber, "_polish_groq", return_value="Cześć") as polish,
+    ):
+        result = module.Transcriber().transcribe_to_polish_sync(wav)
+
+    assert result == "Cześć "
+    mistral.assert_not_called()
+    elevenlabs.assert_called_once_with(wav, language="ru")
+    polish.assert_called_once_with("Cześć")
+
+
+def test_polish_mode_mirrors_translate_mode_with_russian_mistral(monkeypatch, tmp_path):
+    import transcriber as module
+
+    wav = _write_silent_wav(tmp_path)
+    monkeypatch.setattr(module, "POLISH_STT_BACKEND", "mistral")
+    with (
+        patch.object(
+            module.Transcriber, "_transcribe_mistral", return_value="Как дела?"
+        ) as mistral,
+        patch.object(
+            module.Transcriber, "_polish_groq", return_value="Jak się masz?"
+        ) as polish,
+    ):
+        result = module.Transcriber().transcribe_to_polish_sync(wav)
+
+    assert result == "Jak się masz? "
+    mistral.assert_called_once_with(wav, language="ru")
+    polish.assert_called_once_with("Как дела?")
 
 
 def test_unknown_stt_backend_fails_clearly(monkeypatch, tmp_path):

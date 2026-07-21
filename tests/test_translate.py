@@ -32,6 +32,7 @@ def _ok_chat(content):
 
 @pytest.fixture
 def transcriber_module(monkeypatch):
+    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "elevenlabs")
     monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
     monkeypatch.setenv("GROQ_API_KEYS", "k1,k2,k3")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)

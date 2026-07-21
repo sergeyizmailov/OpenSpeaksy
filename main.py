@@ -26,10 +26,14 @@ from PyObjCTools import AppHelper
 
 from recorder import Recorder
 from transcriber import (
+    DICTATE_LANGUAGE,
     ELEVENLABS_API_KEY,
     ELEVENLABS_MODEL,
     GROQ_API_KEYS,
     GROQ_MODEL,
+    MISTRAL_API_KEY,
+    MISTRAL_MODEL,
+    POLISH_STT_BACKEND,
     STT_BACKEND,
     SUPPORTED_STT_BACKENDS,
     Transcriber,
@@ -44,13 +48,13 @@ HOTKEY_KEYCODE   = 0x36   # right Command
 HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
 TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
 TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
-POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian or Polish, paste Polish
+POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian, paste Polish
 POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
 MODE_POLISH    = "polish"
 # Overlay label per mode; dictate has none.
-MODE_LABELS = {MODE_TRANSLATE: "Translate", MODE_POLISH: "Polish"}
+MODE_LABELS = {MODE_TRANSLATE: "English", MODE_POLISH: "Polish"}
 V_KEY = 0x09
 MIN_AUDIO_SAMPLES = 16000
 PB_TYPE = "public.utf8-plain-text"
@@ -342,7 +346,7 @@ def process_pending_recording(path, job_id, mode):
         elif mode == MODE_POLISH:
             text = transcriber.transcribe_to_polish_sync(path)
         else:
-            text = transcriber.transcribe_wav_sync(path)
+            text = transcriber.transcribe_wav_sync(path, language=DICTATE_LANGUAGE)
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
         error = True
@@ -423,7 +427,7 @@ def recover_pending_recordings():
             elif mode == MODE_POLISH:
                 text = transcriber.transcribe_to_polish_sync(path)
             else:
-                text = transcriber.transcribe_wav_sync(path)
+                text = transcriber.transcribe_wav_sync(path, language=DICTATE_LANGUAGE)
         except TranscriptionError as e:
             log(f"recovery transcription error {path.name}: {e}")
             continue  # leave file for next startup
@@ -606,6 +610,12 @@ def main():
             f"{sorted(SUPPORTED_STT_BACKENDS)}"
         )
         os._exit(1)
+    if POLISH_STT_BACKEND not in SUPPORTED_STT_BACKENDS:
+        log(
+            f"FATAL: unsupported Polish STT backend {POLISH_STT_BACKEND!r}; "
+            f"expected one of {sorted(SUPPORTED_STT_BACKENDS)}"
+        )
+        os._exit(1)
 
     if STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
         log(
@@ -614,27 +624,37 @@ def main():
             "and reload."
         )
         os._exit(1)
-    if STT_BACKEND == "groq" and not GROQ_API_KEYS:
+    if STT_BACKEND == "mistral" and not MISTRAL_API_KEY:
         log(
-            "FATAL: no Groq API key configured for the Groq STT backend. Set "
+            "FATAL: no Mistral API key configured. Set MISTRAL_API_KEY in "
+            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
+            "and reload."
+        )
+        os._exit(1)
+    if not GROQ_API_KEYS:
+        log(
+            "FATAL: no Groq API key configured; translation modes require it. Set "
             "GROQ_API_KEYS in ~/Library/LaunchAgents/com.openspeaksy.plist "
             "(EnvironmentVariables) and reload."
         )
         os._exit(1)
-
-    translator = (
-        f"Groq LLM ({len(GROQ_API_KEYS)} key(s))"
-        if GROQ_API_KEYS
-        else "not configured"
-    )
-    stt = (
-        f"ElevenLabs {ELEVENLABS_MODEL}"
-        if STT_BACKEND == "elevenlabs"
-        else f"Groq {GROQ_MODEL}"
-    )
+    if POLISH_STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
+        log("FATAL: Polish STT backend is ElevenLabs but its API key is not configured")
+        os._exit(1)
+    if POLISH_STT_BACKEND == "mistral" and not MISTRAL_API_KEY:
+        log("FATAL: Polish STT backend is Mistral but its API key is not configured")
+        os._exit(1)
+    translator = f"Groq LLM ({len(GROQ_API_KEYS)} key(s))"
+    if STT_BACKEND == "mistral":
+        stt = f"Mistral {MISTRAL_MODEL}"
+    elif STT_BACKEND == "elevenlabs":
+        stt = f"ElevenLabs {ELEVENLABS_MODEL}"
+    else:
+        stt = f"Groq {GROQ_MODEL}"
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
-        f"translation backend: {translator}"
+        f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "
+        f"Polish STT: {POLISH_STT_BACKEND}; translation backend: {translator}"
     )
 
     app = NSApplication.sharedApplication()

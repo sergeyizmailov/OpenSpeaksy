@@ -6,7 +6,7 @@ class StubTranscriber:
         self.text = text
         self.error = error
 
-    def transcribe_wav_sync(self, path):
+    def transcribe_wav_sync(self, path, language=None, backend=None):
         if self.error:
             raise self.error
         return self.text

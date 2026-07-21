@@ -6,20 +6,21 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 ## If the user asks you to install OpenSpeaksy
 
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
-2. Make sure the user has an ElevenLabs API key. If not, send them to
-   <https://elevenlabs.io/app/developers/api-keys>. A Groq API key is also
-   required for the translate and Polish correction modes.
+2. Make sure the user has a Mistral API key. If not, send them to
+   <https://console.mistral.ai/api-keys>. A Groq API key is also
+   required for the Russian-to-English and Russian-to-Polish modes.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
    keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
-   `EnvironmentVariables` (never to the repo). Set `ELEVENLABS_API_KEY=...`
-   and `GROQ_API_KEYS=...` in the environment before running to skip prompts.
+   `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
+   and `GROQ_API_KEYS=...` in the environment before running to skip prompts;
+   `ELEVENLABS_API_KEY=...` optionally retains the Scribe v2 fallback.
 4. After install, the user must manually grant **Input Monitoring** and
    **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
    & Security. Tell them which path to authorize. Do not try to do this
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
-   see `OpenSpeaksy starting — primary STT: ElevenLabs scribe_v2`.
-6. Tell the user to hold right Command to dictate (any language, pastes verbatim), right Option to dictate Russian and paste English, or right Shift to paste corrected Polish.
+   see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
+6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
@@ -27,7 +28,7 @@ Read these files in order — they are short and explicit:
 
 - `main.py` — entry point, state machine, key handling, paste, watchdog, recovery
 - `recorder.py` — PortAudio capture
-- `transcriber.py` — ElevenLabs Scribe v2 STT plus Groq LLM client with multi-key rotation
+- `transcriber.py` — Mistral/ElevenLabs/Groq STT plus Groq LLM client with multi-key rotation
 - `overlay.py` — NSPanel pill overlay
 - `launchd/com.openspeaksy.plist.template` — LaunchAgent definition
 
@@ -47,19 +48,24 @@ Conventions in this codebase:
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
 - **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) pastes the raw
   transcript; right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Scribe v2 RU → Llama translate → optional
-  refine pass for outputs ≥ `REFINE_MIN_CHARS`). The mode is captured under
-  `state_lock` in `_begin_recording` and consumed by `begin_processing`; it
-  is also encoded in the pending filename (`...-{uuid}.{mode}.wav`) so a
-  crash between save and worker spawn doesn't lose the intent.
-- **Overlay theme reflects intent**: `Overlay.show(mode, translate=...)` —
-  pass `translate=True` when the current cycle's mode is `MODE_TRANSLATE`.
-  The view renders the light-silver pill + graphite glyph instead of the
-  dark-graphite dictate theme (both derived from one recipe in `_init_colors`).
-  Errors show a coral `!` on a dark surface regardless.
-- **Watchdog runs in its own thread** (`watchdog_loop`). State mutation
-  happens under the lock; resource cleanup (recorder, overlay) happens
-  outside the lock since those calls can block or marshal to the main loop.
+  `transcribe_and_translate_sync` (Voxtral RU → Llama translate → optional
+  refine pass for outputs ≥ `REFINE_MIN_CHARS`); right Shift (`MODE_POLISH`)
+  mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The
+  mode is captured under `state_lock` in `_begin_recording` and consumed by
+  `begin_processing`; it is also encoded in the pending filename
+  (`...-{uuid}.{mode}.wav`) so a crash between save and worker spawn doesn't
+  lose the intent.
+- **Per-mode STT routing**: `OPENSPEAKSY_DICTATE_LANGUAGE` optionally forces a
+  language hint for right Command; right Option always requests Russian;
+  `OPENSPEAKSY_POLISH_STT_BACKEND` independently selects the right-Shift STT
+  provider; right Shift still forces Russian before the Groq Polish translation.
+- **Overlay labels reflect intent**: call `Overlay.show(mode, label=...)` with
+  the value from `MODE_LABELS`. All modes share the same flat dark pill;
+  translate modes add `English` or `Polish` above it. Errors show a coral `!`.
+- **Watchdog runs in its own thread** (`watchdog_loop`). State mutation and
+  recorder/overlay cleanup stay under `state_lock` so a new recording cannot
+  start between reset and cleanup. Overlay calls marshal asynchronously to the
+  AppKit main loop.
 - **No print() in production code** — all logging goes through `log()` in
   `main.py` (Python `logging` with `RotatingFileHandler`) or
   `logging.getLogger("openspeaksy")` in modules. Never log transcription

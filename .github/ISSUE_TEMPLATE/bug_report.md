@@ -23,7 +23,7 @@ labels: bug
 
 - macOS version:
 - Mac model (M1 / M2 / M3 / Intel):
-- STT backend/model: <!-- for example ElevenLabs / scribe_v2 -->
+- STT backend/model: <!-- for example Mistral / voxtral-mini-2602 -->
 - Python version: <!-- output of `venv/bin/python --version` -->
 
 ## Logs

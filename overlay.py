@@ -17,7 +17,7 @@ from PyObjCTools import AppHelper
 
 W, H = 70, 33
 PAD = 16        # side / bottom margin around the pill
-LABEL_PAD = 18  # extra top margin for the "translate" label
+LABEL_PAD = 18  # extra top margin for the mode label
 MARGIN = 145
 FPS = 1.0 / 60.0
 
@@ -40,10 +40,10 @@ EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
 BAR_RGBA = (190 / 255, 190 / 255, 190 / 255, 1.0)    # Bars / spinner — #bebebe
 BORDER_W = 1.0
 
-# Mode label ("Translate" / "Polish") — small soft rounded type.
+# Mode label ("English" / "Polish") — small soft rounded type.
 LABEL_SIZE = 9.5
 LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
-LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # "Translate" label — medium gray
+LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # Mode label — medium gray
 
 FILL = None
 EDGE = None
@@ -110,7 +110,7 @@ class PillView(NSView):
 
 class GlyphView(NSView):
     """
-    The animated glyph (bars / spinner / error) and the "translate" label, in a
+    The animated glyph (bars / spinner / error) and the mode label, in a
     transparent sibling spanning the whole panel above the pill. The 60fps
     timer drives it via setNeedsDisplay.
     """

@@ -3,13 +3,15 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Asks for ElevenLabs and Groq API keys and writes them into the plist's
-# EnvironmentVariables. ElevenLabs Scribe v2 handles transcription; Groq is
-# used only for translation and Polish correction.
+# Requires Mistral and Groq API keys and optionally accepts an ElevenLabs key,
+# then writes them into the plist's EnvironmentVariables. Mistral Voxtral
+# handles transcription, Groq powers translations, and ElevenLabs remains a
+# selectable fallback.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
-#          ELEVENLABS_API_KEY=key   (skip the ElevenLabs prompt)
+#          MISTRAL_API_KEY=key      (skip the Mistral prompt)
+#          ELEVENLABS_API_KEY=key   (optional retained fallback)
 #          GROQ_API_KEYS=key1,key2  (skip the Groq prompt)
 
 set -euo pipefail
@@ -53,26 +55,45 @@ fi
 
 # --- API keys ---------------------------------------------------------------
 
-step "Configuring ElevenLabs API key"
+step "Configuring Mistral API key"
+if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
+    cat <<EOF
+    OpenSpeaksy uses Mistral Voxtral Mini Transcribe 2 for speech-to-text.
+    Create an API key at: https://console.mistral.ai/api-keys
+
+    The key is written only into your local plist
+    ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
+
+EOF
+    read -rs -p "    Paste your Mistral API key: " MISTRAL_API_KEY
+    echo
+fi
+[[ -n "$MISTRAL_API_KEY" ]] || fail "no Mistral API key provided"
+note "Got Mistral key ending in ...${MISTRAL_API_KEY: -4}"
+
+step "Configuring optional ElevenLabs fallback"
 if [[ -z "${ELEVENLABS_API_KEY:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses ElevenLabs Scribe v2 for speech-to-text.
+    ElevenLabs Scribe v2 can be retained as a fallback speech-to-text backend.
     Create an API key at: https://elevenlabs.io/app/developers/api-keys
 
     The key is written only into your local plist
     ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
 
 EOF
-    read -rs -p "    Paste your ElevenLabs API key: " ELEVENLABS_API_KEY
+    read -rs -p "    Paste an ElevenLabs API key, or press Enter to skip: " ELEVENLABS_API_KEY
     echo
 fi
-[[ -n "$ELEVENLABS_API_KEY" ]] || fail "no ElevenLabs API key provided"
-note "Got ElevenLabs key ending in ...${ELEVENLABS_API_KEY: -4}"
+if [[ -n "$ELEVENLABS_API_KEY" ]]; then
+    note "Got ElevenLabs key ending in ...${ELEVENLABS_API_KEY: -4}"
+else
+    note "ElevenLabs fallback not configured"
+fi
 
 step "Configuring Groq API key"
 if [[ -z "${GROQ_API_KEYS:-}" ]]; then
     cat <<EOF
-    Groq powers Russian-to-English translation and Polish correction.
+    Groq powers Russian-to-English and Russian-to-Polish translation.
     Get a free API key at: https://console.groq.com/keys
 
     The key is written only into your local plist
@@ -108,12 +129,14 @@ mkdir -p "$LAUNCH_AGENTS"
 
 # Use Python's plistlib so paths and key values with XML-sensitive characters
 # are escaped correctly — sed-substitution would corrupt the plist.
-ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" GROQ_API_KEYS="$GROQ_API_KEYS" \
+MISTRAL_API_KEY="$MISTRAL_API_KEY" ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" \
+GROQ_API_KEYS="$GROQ_API_KEYS" \
 "$PYTHON_RUNTIME" - "$PROJECT_ROOT/launchd/${LABEL_APP}.plist.template" \
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
                     "$PROJECT_ROOT" <<'PYEOF'
 import os, sys, plistlib
 template, target, project_root = sys.argv[1:4]
+mistral_key = os.environ.pop("MISTRAL_API_KEY")
 elevenlabs_key = os.environ.pop("ELEVENLABS_API_KEY")
 groq_keys = os.environ.pop("GROQ_API_KEYS")
 with open(template, "rb") as f:
@@ -126,6 +149,7 @@ def replace(node):
         return {k: replace(v) for k, v in node.items()}
     if isinstance(node, str):
         return (node.replace("__PROJECT_ROOT__", project_root)
+                    .replace("__MISTRAL_API_KEY__", mistral_key)
                     .replace("__ELEVENLABS_API_KEY__", elevenlabs_key)
                     .replace("__GROQ_API_KEYS__", groq_keys))
     return node
@@ -158,9 +182,10 @@ System Settings → Privacy & Security:
 
 Using it
 
-  Hold right Command, speak, release — dictate in any language; the text
-  pastes verbatim. Hold right Option instead to dictate in Russian and have
-  the English translation pasted. The output also stays in your clipboard.
+  Hold right Command, speak, release — dictate in a Voxtral-supported language;
+  the text pastes verbatim. Hold right Option instead to dictate in Russian and
+  have the English translation pasted. Hold right Shift to dictate in Russian
+  and have the Polish translation pasted. The output also stays in your clipboard.
 
   Logs:    tail -f ~/Library/Logs/com.openspeaksy/main.log
   Stop:    launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
