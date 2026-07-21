@@ -25,7 +25,17 @@ from CoreFoundation import (
 from PyObjCTools import AppHelper
 
 from recorder import Recorder
-from transcriber import Transcriber, TranscriptionError, write_wav, GROQ_API_KEYS
+from transcriber import (
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_MODEL,
+    GROQ_API_KEYS,
+    GROQ_MODEL,
+    STT_BACKEND,
+    SUPPORTED_STT_BACKENDS,
+    Transcriber,
+    TranscriptionError,
+    write_wav,
+)
 from overlay import Overlay
 
 # Hotkey configuration. Default is right Command.
@@ -35,7 +45,7 @@ HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd fro
 TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
 TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
 POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian or Polish, paste Polish
-POLISH_FLAG    = 0x200  # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
+POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
 MODE_POLISH    = "polish"
@@ -71,10 +81,13 @@ def _install_file_handler():
     so that pytest (which imports main for state-machine tests) can't
     pollute the live agent's log file via the same handler.
     """
-    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    LOG_DIR.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(LOG_DIR, 0o700)
+    log_path = LOG_DIR / "main.log"
     handler = RotatingFileHandler(
-        LOG_DIR / "main.log", maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
+        log_path, maxBytes=2 * 1024 * 1024, backupCount=2, encoding="utf-8"
     )
+    os.chmod(log_path, 0o600)
     handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S"))
     _logger.addHandler(handler)
 
@@ -83,7 +96,27 @@ def log(msg):
     _logger.info(msg)
 
 
-def handle_shutdown(signum, frame):
+def handle_shutdown(signum, _frame):
+    global state, state_ts, current_job_id, current_hotkey, current_mode
+
+    with state_lock:
+        was_recording = state == "recording"
+        mode = current_mode or MODE_DICTATE
+        state = "idle"
+        state_ts = time.monotonic()
+        current_job_id += 1
+        current_hotkey = None
+        current_mode = None
+
+    if was_recording:
+        try:
+            audio = recorder.stop()
+            if len(audio) >= MIN_AUDIO_SAMPLES:
+                path = save_pending_recording(audio, mode)
+                log(f"shutdown preserved recording: {path.name}")
+        except Exception as e:
+            log(f"shutdown recording preservation error: {e}")
+
     log(f"received signal {signum}, exiting")
     os._exit(128 + signum)
 
@@ -108,13 +141,6 @@ tap_ref = None
 source_ref = None
 
 
-def set_state(new):
-    global state, state_ts
-    with state_lock:
-        state = new
-        state_ts = time.monotonic()
-
-
 def begin_processing():
     """
     Atomically transition recording→processing AND allocate a fresh job_id under
@@ -125,7 +151,7 @@ def begin_processing():
     mutable globals.
     Returns (job_id, mode), or (None, None) if state wasn't "recording".
     """
-    global state, state_ts, current_job_id, current_hotkey
+    global state, state_ts, current_job_id, current_hotkey, current_mode
     with state_lock:
         if state != "recording":
             return None, None
@@ -134,6 +160,7 @@ def begin_processing():
         current_job_id += 1
         mode = current_mode
         current_hotkey = None
+        current_mode = None
         return current_job_id, mode
 
 
@@ -144,11 +171,13 @@ def _claim_job_completion(job_id):
     a new recording cycle) from clobbering the active job's state or pasting old
     text into the user's current app.
     """
-    global state, state_ts
+    global state, state_ts, current_hotkey, current_mode
     with state_lock:
         if state == "processing" and current_job_id == job_id:
             state = "idle"
             state_ts = time.monotonic()
+            current_hotkey = None
+            current_mode = None
             return True
         return False
 
@@ -276,6 +305,8 @@ def delete_pending_recording(path):
         path.unlink()
     except FileNotFoundError:
         pass
+    except OSError as e:
+        log(f"delete pending recording error {path.name}: {e}")
 
 
 def quarantine_path(path, reason):
@@ -364,8 +395,8 @@ def recover_pending_recordings():
         try:
             tmp.unlink()
             log(f"removed partial write: {tmp.name}")
-        except OSError:
-            pass
+        except OSError as e:
+            log(f"remove partial write error {tmp.name}: {e}")
 
     paths = sorted(PENDING_DIR.glob("*.wav"))
     if not paths:
@@ -374,7 +405,10 @@ def recover_pending_recordings():
     cutoff = time.time() - PENDING_AGE_WARN_DAYS * 86400
     stale = sum(1 for p in paths if p.stat().st_mtime < cutoff)
     if stale:
-        log(f"WARNING: {stale} pending recording(s) older than {PENDING_AGE_WARN_DAYS}d — Groq API may be unreachable")
+        log(
+            f"WARNING: {stale} pending recording(s) older than "
+            f"{PENDING_AGE_WARN_DAYS}d — transcription API may be unreachable"
+        )
 
     log(f"found {len(paths)} pending recording(s)")
     recovered = []  # (path, text); text may be empty for hallucination/silence
@@ -480,12 +514,12 @@ def on_key_up(keycode):
     except Exception as e:
         log(f"recorder.stop error: {e}")
         overlay.hide()
-        set_state("idle")
+        _claim_job_completion(job_id)
         return
 
     if len(audio) < MIN_AUDIO_SAMPLES:
         overlay.hide()
-        set_state("idle")
+        _claim_job_completion(job_id)
         return
 
     try:
@@ -493,7 +527,7 @@ def on_key_up(keycode):
     except Exception as e:
         log(f"save pending recording error: {e}")
         overlay.hide()
-        set_state("idle")
+        _claim_job_completion(job_id)
         return
 
     overlay.show("loading", label=MODE_LABELS.get(mode))
@@ -560,19 +594,48 @@ def run_event_tap():
 
 
 def main():
+    # Private-by-default for logs, pending recordings, and any future files.
+    os.umask(0o077)
     _install_file_handler()
     signal.signal(signal.SIGTERM, handle_shutdown)
     signal.signal(signal.SIGINT, handle_shutdown)
 
-    if not GROQ_API_KEYS:
+    if STT_BACKEND not in SUPPORTED_STT_BACKENDS:
         log(
-            "FATAL: no Groq API key configured. Set GROQ_API_KEYS in "
-            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
-            "and reload. Get a free key at https://console.groq.com/keys."
+            f"FATAL: unsupported STT backend {STT_BACKEND!r}; expected one of "
+            f"{sorted(SUPPORTED_STT_BACKENDS)}"
         )
         os._exit(1)
 
-    log(f"OpenSpeaksy starting — backend: Groq cloud ({len(GROQ_API_KEYS)} key(s))")
+    if STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
+        log(
+            "FATAL: no ElevenLabs API key configured. Set ELEVENLABS_API_KEY in "
+            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
+            "and reload."
+        )
+        os._exit(1)
+    if STT_BACKEND == "groq" and not GROQ_API_KEYS:
+        log(
+            "FATAL: no Groq API key configured for the Groq STT backend. Set "
+            "GROQ_API_KEYS in ~/Library/LaunchAgents/com.openspeaksy.plist "
+            "(EnvironmentVariables) and reload."
+        )
+        os._exit(1)
+
+    translator = (
+        f"Groq LLM ({len(GROQ_API_KEYS)} key(s))"
+        if GROQ_API_KEYS
+        else "not configured"
+    )
+    stt = (
+        f"ElevenLabs {ELEVENLABS_MODEL}"
+        if STT_BACKEND == "elevenlabs"
+        else f"Groq {GROQ_MODEL}"
+    )
+    log(
+        f"OpenSpeaksy starting — primary STT: {stt}; "
+        f"translation backend: {translator}"
+    )
 
     app = NSApplication.sharedApplication()
     app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
@@ -585,7 +648,10 @@ def main():
     threading.Thread(target=run_event_tap, daemon=True).start()
     time.sleep(0.1)
 
-    log("OpenSpeaksy running — hold right Command (dictate), right Option (Russian→English), or right Shift (→Polish)")
+    log(
+        "OpenSpeaksy running — hold right Command (dictate), right Option "
+        "(Russian→English), or right Shift (→Polish)"
+    )
     AppHelper.runEventLoop()
 
 

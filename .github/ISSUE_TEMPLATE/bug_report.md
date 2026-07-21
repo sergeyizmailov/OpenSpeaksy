@@ -23,15 +23,15 @@ labels: bug
 
 - macOS version:
 - Mac model (M1 / M2 / M3 / Intel):
-- Whisper model: <!-- large-v3 / large-v3-turbo / medium / etc. -->
-- whisper.cpp version: <!-- output of `cd whisper.cpp && git describe --tags` -->
+- STT backend/model: <!-- for example ElevenLabs / scribe_v2 -->
+- Python version: <!-- output of `venv/bin/python --version` -->
 
 ## Logs
 
 Relevant lines from:
 
 - `~/Library/Logs/com.openspeaksy/main.log`
-- `/tmp/openspeaksy-whisper.log`
+- `/tmp/openspeaksy.log`
 
 ```
 paste here

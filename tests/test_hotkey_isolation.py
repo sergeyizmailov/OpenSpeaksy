@@ -57,3 +57,4 @@ def test_on_key_up_for_owning_hotkey_claims_transition(monkeypatch):
     assert main.state == "idle"
     # current_hotkey was cleared by begin_processing
     assert main.current_hotkey is None
+    assert main.current_mode is None

@@ -32,6 +32,7 @@ def _ok_chat(content):
 
 @pytest.fixture
 def transcriber_module(monkeypatch):
+    monkeypatch.setenv("ELEVENLABS_API_KEY", "eleven-test-key")
     monkeypatch.setenv("GROQ_API_KEYS", "k1,k2,k3")
     monkeypatch.delenv("GROQ_API_KEY", raising=False)
     import importlib
@@ -57,7 +58,7 @@ def _write_silent_wav(tmp_path):
     return p
 
 
-def test_language_field_in_multipart(transcriber_module, tmp_path):
+def test_language_code_in_elevenlabs_multipart(transcriber_module, tmp_path):
     t = transcriber_module
     wav = _write_silent_wav(tmp_path)
     captured = {}
@@ -67,10 +68,10 @@ def test_language_field_in_multipart(transcriber_module, tmp_path):
         return _ok_transcribe("привет")
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        t.Transcriber()._transcribe_groq(wav, language="ru")
+        t.Transcriber()._transcribe_elevenlabs(wav, language="ru")
 
-    assert b'name="language"' in captured["body"]
-    assert b"\r\nru\r\n" in captured["body"]
+    assert b'name="language_code"' in captured["body"]
+    assert b"\r\nrus\r\n" in captured["body"]
 
 
 def test_language_omitted_by_default(transcriber_module, tmp_path):
@@ -83,9 +84,9 @@ def test_language_omitted_by_default(transcriber_module, tmp_path):
         return _ok_transcribe("hello")
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        t.Transcriber()._transcribe_groq(wav)
+        t.Transcriber()._transcribe_elevenlabs(wav)
 
-    assert b'name="language"' not in captured["body"]
+    assert b'name="language_code"' not in captured["body"]
 
 
 def test_translate_groq_posts_chat_completions(transcriber_module):
@@ -150,7 +151,7 @@ def test_transcribe_and_translate_skips_llm_on_empty(transcriber_module, tmp_pat
     chat_calls = []
 
     def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
+        if "speech-to-text" in req.full_url:
             return _ok_transcribe("Спасибо за просмотр")  # known hallucination
         chat_calls.append(True)
         return _ok_chat("should not happen")
@@ -168,7 +169,7 @@ def test_transcribe_and_translate_happy_path(transcriber_module, tmp_path):
     captured_msgs = {}
 
     def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
+        if "speech-to-text" in req.full_url:
             return _ok_transcribe("Как дела?")
         body = json.loads(req.data.decode())
         captured_msgs["user"] = body["messages"][1]["content"]
@@ -184,16 +185,13 @@ def test_transcribe_and_translate_happy_path(transcriber_module, tmp_path):
     assert result == "How are you? "
 
 
-def test_whisper_prompt_sent_in_translate_mode(transcriber_module, tmp_path):
-    """Translate mode passes a Russian-context prompt to bias Whisper toward
-    well-formed Russian sentences. Dictate mode (no language) must NOT send a
-    prompt — that would bias against other languages."""
+def test_translate_sets_russian_while_dictate_keeps_auto_detection(transcriber_module, tmp_path):
     t = transcriber_module
     wav = _write_silent_wav(tmp_path)
     captured_bodies = []
 
     def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
+        if "speech-to-text" in req.full_url:
             captured_bodies.append(req.data)
             return _ok_transcribe("")  # empty -> skips LLM
         return _ok_chat("")
@@ -202,8 +200,9 @@ def test_whisper_prompt_sent_in_translate_mode(transcriber_module, tmp_path):
         t.Transcriber().transcribe_and_translate_sync(wav)
         t.Transcriber().transcribe_wav_sync(wav)  # dictate path
 
-    assert b'name="prompt"' in captured_bodies[0], "translate mode must send Whisper prompt"
-    assert b'name="prompt"' not in captured_bodies[1], "dictate mode must NOT send Whisper prompt"
+    assert b'name="language_code"' in captured_bodies[0]
+    assert b"\r\nrus\r\n" in captured_bodies[0]
+    assert b'name="language_code"' not in captured_bodies[1]
 
 
 def test_refinement_runs_for_long_translations(transcriber_module, tmp_path):
@@ -215,7 +214,7 @@ def test_refinement_runs_for_long_translations(transcriber_module, tmp_path):
     assert len(long_first_pass) >= t.REFINE_MIN_CHARS
 
     def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
+        if "speech-to-text" in req.full_url:
             return _ok_transcribe("Я подумал, может встретимся завтра днём.")
         body = json.loads(req.data.decode())
         chat_payloads.append(body)
@@ -243,7 +242,7 @@ def test_refinement_failure_falls_back_to_first_pass(transcriber_module, tmp_pat
     long_first_pass = "I was just thinking that maybe we could meet up tomorrow afternoon."
 
     def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
+        if "speech-to-text" in req.full_url:
             return _ok_transcribe("Я подумал, может встретимся завтра днём.")
         chat_count["n"] += 1
         if chat_count["n"] == 1:

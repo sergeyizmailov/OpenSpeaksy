@@ -15,43 +15,76 @@ class Recorder:
         self._lock = threading.Lock()
         self._recording = False
 
-    def _callback(self, indata, frames, time, status):
+    def _callback(self, indata, _frames, _time_info, status):
         try:
             if status:
-                logger.info(f"audio status: {status}")
+                logger.warning(f"audio status: {status}")
             with self._lock:
-                self._chunks.append(indata.copy())
+                if self._recording:
+                    self._chunks.append(indata.copy())
         except Exception as e:
             logger.error(f"audio callback error: {e}")
+
+    @staticmethod
+    def _close_stream(stream, context):
+        try:
+            if stream.active:
+                stream.stop()
+        except Exception as e:
+            logger.error(f"{context} stream stop error: {e}")
+        try:
+            stream.close()
+        except Exception as e:
+            logger.error(f"{context} stream close error: {e}")
 
     def start(self):
         # Defensive: clean up orphan stream if previous recording was abandoned
         # (watchdog reset, lost key-up event)
         if self._stream is not None:
-            try:
-                self._stream.stop()
-                self._stream.close()
-            except Exception as e:
-                logger.error(f"orphan stream cleanup error: {e}")
+            self._close_stream(self._stream, "orphan")
             self._stream = None
 
         with self._lock:
             self._chunks = []
-        self._recording = True
-        self._stream = sd.InputStream(
-            samplerate=self.samplerate,
-            channels=1,
-            dtype="float32",
-            callback=self._callback,
-        )
-        self._stream.start()
+            self._recording = True
+
+        # Core Audio stays in shared mode: never change device parameters or
+        # take exclusive ownership from FaceTime, browser calls, or recording
+        # apps. Its converter handles the device's native rate → 16 kHz PCM.
+        stream = None
+        try:
+            stream = sd.InputStream(
+                samplerate=self.samplerate,
+                channels=1,
+                dtype="float32",
+                callback=self._callback,
+                extra_settings=sd.CoreAudioSettings(
+                    change_device_parameters=False,
+                    conversion_quality="max",
+                ),
+            )
+            self._stream = stream
+            stream.start()
+        except Exception:
+            self._stream = None
+            with self._lock:
+                self._recording = False
+                self._chunks = []
+            if stream is not None:
+                self._close_stream(stream, "failed-start")
+            raise
 
     def stop(self):
-        self._recording = False
-        if self._stream:
-            self._stream.stop()
-            self._stream.close()
-            self._stream = None
+        with self._lock:
+            self._recording = False
+
+        stream = self._stream
+        self._stream = None
+        if stream is not None:
+            # Device changes and Continuity/Bluetooth disconnects can make
+            # stop/close fail. Preserve already-captured audio regardless.
+            self._close_stream(stream, "recording")
+
         with self._lock:
             if self._chunks:
                 audio = np.concatenate(self._chunks, axis=0).flatten()
@@ -59,7 +92,3 @@ class Recorder:
                 audio = np.array([], dtype="float32")
             self._chunks = []
         return audio
-
-    @property
-    def is_recording(self):
-        return self._recording

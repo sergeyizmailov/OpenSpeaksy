@@ -3,12 +3,14 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Asks for a Groq API key and writes it into the plist's EnvironmentVariables.
-# Get a free key at https://console.groq.com/keys.
+# Asks for ElevenLabs and Groq API keys and writes them into the plist's
+# EnvironmentVariables. ElevenLabs Scribe v2 handles transcription; Groq is
+# used only for translation and Polish correction.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
-#          GROQ_API_KEYS=key1,key2  (skip the interactive prompt)
+#          ELEVENLABS_API_KEY=key   (skip the ElevenLabs prompt)
+#          GROQ_API_KEYS=key1,key2  (skip the Groq prompt)
 
 set -euo pipefail
 
@@ -49,12 +51,28 @@ if ! command -v "$PYTHON_RUNTIME" &>/dev/null; then
     command -v "$PYTHON_RUNTIME" &>/dev/null || fail "Python interpreter not found after install"
 fi
 
-# --- Groq API key -----------------------------------------------------------
+# --- API keys ---------------------------------------------------------------
+
+step "Configuring ElevenLabs API key"
+if [[ -z "${ELEVENLABS_API_KEY:-}" ]]; then
+    cat <<EOF
+    OpenSpeaksy uses ElevenLabs Scribe v2 for speech-to-text.
+    Create an API key at: https://elevenlabs.io/app/developers/api-keys
+
+    The key is written only into your local plist
+    ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
+
+EOF
+    read -rs -p "    Paste your ElevenLabs API key: " ELEVENLABS_API_KEY
+    echo
+fi
+[[ -n "$ELEVENLABS_API_KEY" ]] || fail "no ElevenLabs API key provided"
+note "Got ElevenLabs key ending in ...${ELEVENLABS_API_KEY: -4}"
 
 step "Configuring Groq API key"
 if [[ -z "${GROQ_API_KEYS:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses the Groq cloud Whisper API for transcription.
+    Groq powers Russian-to-English translation and Polish correction.
     Get a free API key at: https://console.groq.com/keys
 
     The key is written only into your local plist
@@ -90,12 +108,14 @@ mkdir -p "$LAUNCH_AGENTS"
 
 # Use Python's plistlib so paths and key values with XML-sensitive characters
 # are escaped correctly — sed-substitution would corrupt the plist.
+ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" GROQ_API_KEYS="$GROQ_API_KEYS" \
 "$PYTHON_RUNTIME" - "$PROJECT_ROOT/launchd/${LABEL_APP}.plist.template" \
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
-                    "$PROJECT_ROOT" \
-                    "$GROQ_API_KEYS" <<'PYEOF'
+                    "$PROJECT_ROOT" <<'PYEOF'
 import os, sys, plistlib
-template, target, project_root, groq_keys = sys.argv[1:5]
+template, target, project_root = sys.argv[1:4]
+elevenlabs_key = os.environ.pop("ELEVENLABS_API_KEY")
+groq_keys = os.environ.pop("GROQ_API_KEYS")
 with open(template, "rb") as f:
     pl = plistlib.load(f)
 
@@ -105,7 +125,9 @@ def replace(node):
     if isinstance(node, dict):
         return {k: replace(v) for k, v in node.items()}
     if isinstance(node, str):
-        return node.replace("__PROJECT_ROOT__", project_root).replace("__GROQ_API_KEYS__", groq_keys)
+        return (node.replace("__PROJECT_ROOT__", project_root)
+                    .replace("__ELEVENLABS_API_KEY__", elevenlabs_key)
+                    .replace("__GROQ_API_KEYS__", groq_keys))
     return node
 
 # Open with 0600 from the start so the API key is never world-readable,
@@ -144,7 +166,7 @@ Using it
   Stop:    launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
   Remove:  ./scripts/uninstall.sh
 
-To rotate the API key later, edit
+To rotate an API key later, edit
 $LAUNCH_AGENTS/${LABEL_APP}.plist
 and re-run: launchctl unload ... && launchctl load ...
 EOF

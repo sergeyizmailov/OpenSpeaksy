@@ -2,13 +2,13 @@
 
 # OpenSpeaksy
 
-**Free voice dictation for macOS, powered by the Groq Whisper API.**
+**Voice dictation for macOS, powered by ElevenLabs Scribe v2.**
 Hold right Command, speak, let go. The text appears in any app.
 
 [![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-lightgrey.svg)]()
-[![Backend: Groq](https://img.shields.io/badge/backend-Groq%20Whisper-orange.svg)](https://console.groq.com/)
+[![Backend: ElevenLabs](https://img.shields.io/badge/backend-ElevenLabs%20Scribe%20v2-black.svg)](https://elevenlabs.io/docs/overview/capabilities/speech-to-text)
 
 <br>
 
@@ -18,16 +18,16 @@ Hold right Command, speak, let go. The text appears in any app.
 
 ---
 
-## A free alternative to Wispr Flow, Superwhisper
+## An open alternative to Wispr Flow, Superwhisper
 
-Same idea — without the subscription. Bring your own free Groq API key, get sub-second transcriptions, no account on us, no ads, no tracking, source open.
+Same idea with your own API credentials: ElevenLabs Scribe v2 handles transcription, while Groq powers the optional translation and Polish correction modes. No OpenSpeaksy account, ads, or tracking.
 
 | | OpenSpeaksy | Typical paid app |
 |---|---|---|
-| Price | **Free** (MIT) — bring your own Groq key | $10 – 15 / month |
-| Transcription latency | ~0.2 – 0.5 s | similar |
-| Account / signup | Groq free key, no OpenSpeaksy account | Required |
-| Usage limits | Groq's free-tier daily quota | Daily / monthly caps |
+| Price | **MIT licensed** — bring your own API keys | $10 – 15 / month |
+| Transcription latency | Network-dependent | similar |
+| Account / signup | ElevenLabs key, plus Groq for transform modes | Required |
+| Usage limits | Your providers' quotas | Daily / monthly caps |
 | Ads & upsells | Never | Sometimes |
 | Source code | Open | Closed |
 
@@ -35,19 +35,19 @@ Same idea — without the subscription. Bring your own free Groq API key, get su
 
 ## What you get
 
-- **Free.** MIT licensed. No OpenSpeaksy account, no subscription, no telemetry — bring your own Groq key (free) and that's it.
-- **Fast.** Groq runs Whisper Large v3 in ~0.2 – 0.5 s for short phrases.
+- **Open.** MIT licensed. No OpenSpeaksy account or telemetry; credentials stay in your local LaunchAgent plist.
+- **Accurate.** ElevenLabs Scribe v2 provides multilingual speech recognition across 90+ languages.
 - **Multilingual.** Auto-detects language. Handles Russian, English, mixed speech well.
-- **Reliable.** Recordings are queued to disk; nothing is lost if Groq is unreachable.
+- **Reliable.** Recordings are queued to disk; nothing is lost if the transcription service is unreachable.
 - **Drop-in install.** Hand the repo to any AI coding agent — it sets everything up.
 
 ## Install
 
 Pick the path that fits you. Both end up at the same place: a working install in about five minutes.
 
-### Prerequisite — get a free Groq API key
+### Prerequisites — get API keys
 
-Sign in at [console.groq.com/keys](https://console.groq.com/keys), click **Create API Key**, and copy the long `gsk_...` string. Free tier, no card required.
+Create an [ElevenLabs API key](https://elevenlabs.io/app/developers/api-keys) for Scribe v2 transcription. Create a [Groq API key](https://console.groq.com/keys) as well if you use Russian-to-English translation or Polish correction.
 
 ### Option A — One-prompt install (recommended if you don't use Terminal)
 
@@ -60,7 +60,7 @@ git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
 cd ~/OpenSpeaksy
 ./scripts/install.sh
 
-The installer will ask for my Groq API key — I'll paste it when prompted.
+The installer will ask for my ElevenLabs and Groq API keys — I'll paste them when prompted.
 Then walk me through granting Input Monitoring and Accessibility permissions
 in System Settings → Privacy & Security.
 ```
@@ -79,7 +79,7 @@ cd ~/OpenSpeaksy
 ./scripts/install.sh
 ```
 
-When prompted, paste your Groq API key and press Enter. The installer creates a Python venv, generates the LaunchAgent plist (with the key stored at `0600` so only your user can read it), and starts the background service.
+When prompted, paste your ElevenLabs and Groq API keys and press Enter. The installer creates a Python venv, generates the LaunchAgent plist (stored at `0600` so only your user can read it), and starts the background service.
 
 **2.** Grant macOS permissions. Open **System Settings → Privacy & Security**:
 
@@ -99,20 +99,22 @@ You should see `OpenSpeaksy running — hold right Command (dictate) or right Op
 
 ## Usage
 
-Two hotkeys:
+Three hotkeys:
 
 - **Right ⌘** — dictate. Speak in any language, the text pastes verbatim.
-- **Right ⌥ (Option)** — dictate Russian, paste English. Speech is transcribed in Russian, then an LLM (`llama-3.3-70b-versatile` on Groq) translates it before pasting.
+- **Right ⌥ (Option)** — dictate Russian, paste English. Scribe v2 transcribes in Russian, then an LLM (`llama-3.3-70b-versatile` on Groq) translates it before pasting.
+- **Right ⇧ (Shift)** — dictate Russian or Polish, paste corrected Polish using the same transcription and Groq LLM pipeline.
 
 Hold the key, speak, release. The text pastes into the focused field and stays in your clipboard.
 
-A small dark pill appears near the bottom of the screen. Both hotkeys share the same pill; translate adds a thin **translate** label above it:
+A small dark pill appears near the bottom of the screen. All hotkeys share the same pill; transform modes add a thin label above it:
 
 - **Pill, no label** — dictate (right ⌘)
-- **Pill with "translate" label** — translate (right ⌥)
-- **Animated bars** while recording, **spinner** while transcribing (or translating), **coral `!`** if Groq returns an error
+- **Pill with "Translate" label** — translate (right ⌥)
+- **Pill with "Polish" label** — Polish correction (right ⇧)
+- **Animated bars** while recording, **spinner** while transcribing (or translating), **coral `!`** if a provider returns an error
 
-Recordings shorter than 1 second are skipped. Common Whisper hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out automatically.
+Recordings shorter than 1 second are skipped. Common speech-model hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out automatically.
 
 ## Configuration
 
@@ -140,22 +142,23 @@ Common alternatives:
 
 After editing, restart: `launchctl stop com.openspeaksy` (KeepAlive auto-restarts it).
 
-### Tune translate quality
+### Tune providers and translate quality
 
-The translate path (right ⌥) does Whisper transcription → LLM translation → second LLM pass to polish phrasing on longer outputs. Four env vars in `~/Library/LaunchAgents/com.openspeaksy.plist` (`EnvironmentVariables`) tune it without touching code:
+The translate path (right ⌥) does Scribe v2 transcription → LLM translation → second LLM pass to polish phrasing on longer outputs. Environment variables in `~/Library/LaunchAgents/com.openspeaksy.plist` tune it without touching code:
 
 | Variable | Default | Effect |
 |---|---|---|
-| `GROQ_MODEL` | `whisper-large-v3` | Whisper model used for both hotkeys |
+| `OPENSPEAKSY_STT_BACKEND` | `elevenlabs` | Primary STT provider: `elevenlabs` or retained `groq` fallback |
+| `ELEVENLABS_MODEL` | `scribe_v2` | Primary speech-to-text model |
+| `GROQ_MODEL` | `whisper-large-v3` | Speech-to-text model when the Groq fallback is selected |
 | `GROQ_TRANSLATION_MODEL` | `llama-3.3-70b-versatile` | LLM used to translate + refine |
 | `GROQ_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
-| `GROQ_WHISPER_PROMPT_RU` | generic dictation hint | Russian context prompt — set to your domain's vocabulary for better names/jargon |
 
 After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
 
 ### Rotate or change the API key
 
-Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change the `GROQ_API_KEYS` value (comma-separated for multiple keys), then:
+Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change `ELEVENLABS_API_KEY` or `GROQ_API_KEYS` (comma-separated for multiple Groq keys), then:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
@@ -164,24 +167,15 @@ launchctl load   ~/Library/LaunchAgents/com.openspeaksy.plist
 
 ## How it works
 
-A single LaunchAgent (`com.openspeaksy`) runs `main.py`. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to `api.groq.com/openai/v1/audio/transcriptions`, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
+A single LaunchAgent (`com.openspeaksy`) runs `main.py`. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to ElevenLabs Scribe v2, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
 
-Translate mode (right ⌥) adds two more steps: Whisper runs with `language="ru"`, then `llama-3.3-70b-versatile` translates the Russian to English. For outputs of 40+ characters, a second LLM call polishes awkward phrasing; if it errors, the first-pass translation is kept (a stiff translation is better than none).
+Translate mode (right ⌥) asks Scribe v2 for Russian (`language_code="rus"`), then `llama-3.3-70b-versatile` translates the Russian to English. For outputs of 40+ characters, a second LLM call polishes awkward phrasing; if it errors, the first-pass translation is kept.
 
-A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. The pending filename encodes which mode (`dictate` vs `translate`) recorded the audio, so recovery after a crash preserves intent. If Groq is unreachable, the audio stays in `.pending/`; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
+A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. The pending filename encodes the selected mode, so recovery after a crash preserves intent. If a provider is unreachable, the audio stays in `.pending/`; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
 
 ## Performance
 
-On any modern Mac with reasonable network:
-
-| Audio length | Latency |
-|---|---|
-| 1 s | ~0.2 s |
-| 5 s | ~0.4 s |
-| 11 s (JFK sample) | ~0.55 s |
-| 30 s | ~1 s |
-
-The Mac does almost nothing — audio capture and one HTTPS request. The model lives on Groq's LPU.
+The Mac does almost nothing beyond audio capture and HTTPS requests. End-to-end latency depends on audio length, network conditions, and current provider load.
 
 ## Logs
 
@@ -198,7 +192,7 @@ Captures startup, watchdog events, errors, and recovery. Per-transcription text 
 | Hotkey ignored, nothing happens | Input Monitoring not granted to `venv/bin/python` |
 | Recording works but text doesn't paste | Accessibility not granted to the same binary |
 | No microphone prompt on first try | Microphone permission denied earlier — re-enable in System Settings |
-| Coral `!` overlay every time | Groq key invalid, quota exhausted, or no internet — check the log |
+| Coral `!` overlay every time | ElevenLabs/Groq key invalid, quota exhausted, or no internet — check the log |
 | Hotkey ignored only in some apps (1Password, sudo prompts) | macOS Secure Input is active there; click out and back in |
 
 For specifics, check the [log](#logs).
@@ -213,8 +207,8 @@ Removes the LaunchAgent and logs. Project files and any queued recordings are le
 
 ## Built on
 
-- [Groq Whisper API](https://console.groq.com/docs/speech-to-text) — `whisper-large-v3` on the LPU
-- [OpenAI Whisper](https://github.com/openai/whisper) — the underlying model
+- [ElevenLabs Speech to Text](https://elevenlabs.io/docs/overview/capabilities/speech-to-text) — Scribe v2 transcription
+- [Groq Chat Completions](https://console.groq.com/docs/api-reference) — optional translation and correction modes
 - [PyObjC](https://github.com/ronaldoussoren/pyobjc) — for the macOS event tap and overlay
 
 ## License

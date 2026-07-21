@@ -16,7 +16,6 @@ from Quartz import CAMediaTimingFunction
 from PyObjCTools import AppHelper
 
 W, H = 70, 33
-R = H / 2       # corner radius = perfect circle when the pill is H wide
 PAD = 16        # side / bottom margin around the pill
 LABEL_PAD = 18  # extra top margin for the "translate" label
 MARGIN = 145

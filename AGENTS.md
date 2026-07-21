@@ -6,19 +6,20 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 ## If the user asks you to install OpenSpeaksy
 
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
-2. Make sure the user has a Groq API key. If not, send them to
-   <https://console.groq.com/keys> to create a free one.
+2. Make sure the user has an ElevenLabs API key. If not, send them to
+   <https://elevenlabs.io/app/developers/api-keys>. A Groq API key is also
+   required for the translate and Polish correction modes.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
-   key and write it into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
-   `EnvironmentVariables` (never to the repo). Set `GROQ_API_KEYS=...` in the
-   environment before running to skip the prompt.
+   keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
+   `EnvironmentVariables` (never to the repo). Set `ELEVENLABS_API_KEY=...`
+   and `GROQ_API_KEYS=...` in the environment before running to skip prompts.
 4. After install, the user must manually grant **Input Monitoring** and
    **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
    & Security. Tell them which path to authorize. Do not try to do this
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
-   see `OpenSpeaksy starting — backend: Groq cloud (1 key(s))`.
-6. Tell the user to hold right Command to dictate (any language, pastes verbatim), or right Option to dictate Russian and paste English.
+   see `OpenSpeaksy starting — primary STT: ElevenLabs scribe_v2`.
+6. Tell the user to hold right Command to dictate (any language, pastes verbatim), right Option to dictate Russian and paste English, or right Shift to paste corrected Polish.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
@@ -26,16 +27,17 @@ Read these files in order — they are short and explicit:
 
 - `main.py` — entry point, state machine, key handling, paste, watchdog, recovery
 - `recorder.py` — PortAudio capture
-- `transcriber.py` — Groq HTTP client with multi-key rotation
+- `transcriber.py` — ElevenLabs Scribe v2 STT plus Groq LLM client with multi-key rotation
 - `overlay.py` — NSPanel pill overlay
 - `launchd/com.openspeaksy.plist.template` — LaunchAgent definition
 
 Conventions in this codebase:
 
 - **Single-source state**: the `state` global in `main.py` is mutated only
-  through `set_state(new)`, `_begin_recording(keycode, mode)`,
+  through `_begin_recording(keycode, mode)`,
   `_abandon_recording_cycle()`, `begin_processing()`,
-  `_claim_job_completion()`, and the watchdog. Any new code that decides to
+  `_claim_job_completion()`, `handle_shutdown()`, and the watchdog. Any new
+  code that decides to
   paste, delete a pending file, or animate the overlay must claim ownership
   via these primitives first; stale workers that finish after a watchdog
   reset are explicitly designed to abort silently.
@@ -43,9 +45,9 @@ Conventions in this codebase:
   cleared in `begin_processing`/`_abandon_recording_cycle`/watchdog. A key-up
   for a keycode that doesn't match `current_hotkey` is ignored — this is what
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
-- **Two hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) pastes the raw
+- **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) pastes the raw
   transcript; right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Whisper RU → Llama translate → optional
+  `transcribe_and_translate_sync` (Scribe v2 RU → Llama translate → optional
   refine pass for outputs ≥ `REFINE_MIN_CHARS`). The mode is captured under
   `state_lock` in `_begin_recording` and consumed by `begin_processing`; it
   is also encoded in the pending filename (`...-{uuid}.{mode}.wav`) so a

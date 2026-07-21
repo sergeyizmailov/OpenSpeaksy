@@ -1,8 +1,10 @@
-"""
-Whisper has known hallucination phrases that appear on silence or
-near-silent input. They must never reach the user's clipboard.
-"""
-from transcriber import Transcriber
+"""Known silence hallucinations must be filtered without eating real speech."""
+from unittest.mock import patch
+
+import numpy as np
+
+import transcriber as transcriber_module
+from transcriber import Transcriber, write_wav
 
 
 def test_russian_hallucination_filtered():
@@ -29,3 +31,29 @@ def test_real_text_passes():
 def test_empty_string_not_hallucination():
     t = Transcriber()
     assert not t._is_hallucination("")
+
+
+def test_known_phrase_is_filtered_for_silent_audio(tmp_path, monkeypatch):
+    wav = tmp_path / "silent.wav"
+    write_wav(np.zeros(16000, dtype=np.float32), wav)
+    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "elevenlabs")
+
+    with patch.object(
+        Transcriber,
+        "_transcribe_elevenlabs",
+        return_value="Спасибо за просмотр",
+    ):
+        assert Transcriber().transcribe_wav_sync(wav) == ""
+
+
+def test_legitimate_phrase_is_kept_when_spoken(tmp_path, monkeypatch):
+    wav = tmp_path / "speech.wav"
+    write_wav(np.full(16000, 0.1, dtype=np.float32), wav)
+    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "elevenlabs")
+
+    with patch.object(
+        Transcriber,
+        "_transcribe_elevenlabs",
+        return_value="Thank you",
+    ):
+        assert Transcriber().transcribe_wav_sync(wav) == "Thank you "

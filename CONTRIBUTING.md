@@ -7,7 +7,7 @@ focused on macOS dictation — please read this before opening a PR.
 
 - macOS reliability and UX improvements
 - New hotkey / overlay options
-- Groq API integration tweaks (rate-limit handling, model parameters)
+- ElevenLabs/Groq integration tweaks (rate-limit handling, model parameters)
 - Documentation, install-script fixes, packaging
 - Bug fixes with a clear repro
 
@@ -45,7 +45,7 @@ changes if helpful. Example:
 ```
 Collapse repeated transcripts and log paste length
 
-Whisper occasionally emits the same short dictation twice with tiny
+Speech models can occasionally emit the same short dictation twice with tiny
 wording differences. SequenceMatcher with a 0.80 ratio on length-bucketed
 input catches these without affecting genuinely distinct sentences.
 ```
@@ -55,9 +55,9 @@ input catches these without affecting genuinely distinct sentences.
 Open an issue with:
 
 - macOS version + Apple Silicon / Intel
-- Groq model in use (`whisper-large-v3` is the default)
+- STT backend and model (`elevenlabs` / `scribe_v2` by default)
 - Reproduction steps
 - Relevant lines from `~/Library/Logs/com.openspeaksy/main.log`
 
-**Never paste transcribed text, audio, or your Groq API key into an issue** —
+**Never paste transcribed text, audio, or API keys into an issue** —
 those are private. Lengths, error messages, and paths are enough.

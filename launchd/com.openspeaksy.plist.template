@@ -15,6 +15,10 @@
     <string>__PROJECT_ROOT__</string>
     <key>EnvironmentVariables</key>
     <dict>
+        <key>OPENSPEAKSY_STT_BACKEND</key>
+        <string>elevenlabs</string>
+        <key>ELEVENLABS_API_KEY</key>
+        <string>__ELEVENLABS_API_KEY__</string>
         <key>GROQ_API_KEYS</key>
         <string>__GROQ_API_KEYS__</string>
     </dict>
