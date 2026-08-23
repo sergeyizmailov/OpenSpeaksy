@@ -46,8 +46,10 @@ Conventions in this codebase:
   cleared in `begin_processing`/`_abandon_recording_cycle`/watchdog. A key-up
   for a keycode that doesn't match `current_hotkey` is ignored — this is what
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
-- **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) pastes the raw
-  transcript; right Option (`MODE_TRANSLATE`) routes through
+- **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) routes through
+  `transcribe_and_correct_sync` (Voxtral → optional correction pass for
+  transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
+  right Option (`MODE_TRANSLATE`) routes through
   `transcribe_and_translate_sync` (Voxtral RU → Mistral translate → optional
   refine pass for outputs ≥ `REFINE_MIN_CHARS`); right Shift (`MODE_POLISH`)
   mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The

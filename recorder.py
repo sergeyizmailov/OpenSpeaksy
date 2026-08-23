@@ -44,9 +44,11 @@ class Recorder:
     def start(self):
         # Defensive: clean up orphan stream if previous recording was abandoned
         # (watchdog reset, lost key-up event)
-        if self._stream is not None:
-            self._close_stream(self._stream, "orphan")
+        with self._lock:
+            orphan = self._stream
             self._stream = None
+        if orphan is not None:
+            self._close_stream(orphan, "orphan")
 
         # Core Audio stays in shared mode: never change device parameters or
         # take exclusive ownership from FaceTime, browser calls, or recording

@@ -30,10 +30,13 @@ from PyObjCTools import AppHelper
 
 from recorder import Recorder
 from transcriber import (
+    CONTEXT_BIAS_TERMS,
+    CORRECT_DICTATION,
     DICTATE_LANGUAGE,
     ELEVENLABS_API_KEY,
     ELEVENLABS_MODEL,
     MISTRAL_API_KEY,
+    MISTRAL_CORRECTION_MODEL,
     MISTRAL_MODEL,
     MISTRAL_TRANSLATION_MODEL,
     POLISH_STT_BACKEND,
@@ -41,6 +44,7 @@ from transcriber import (
     SUPPORTED_STT_BACKENDS,
     Transcriber,
     TranscriptionError,
+    ProviderUnavailableError,
     write_wav,
 )
 from overlay import Overlay
@@ -216,6 +220,10 @@ overlay = Overlay()
 state = "idle"
 state_ts = time.monotonic()
 state_lock = threading.Lock()
+# Serializes clipboard mutations between live-worker pastes and the
+# background pending-recovery pass, so recovered text can never race a fresh
+# dictation paste into the same clipboard.
+_clipboard_gate = threading.Lock()
 # Per-job token. Each on_key_up bumps this and the spawned worker captures it.
 # A worker may only mutate state/clipboard if its token still matches current_job_id —
 # otherwise it is a stale completion from a watchdog-reset cycle.
@@ -225,6 +233,10 @@ current_job_id = 0
 # the OTHER hotkey mid-record can't end the cycle. Watchdog also clears it on reset.
 current_hotkey = None
 current_mode = None
+# Pending WAV owned by the in-flight processing job. Set in on_key_up before
+# the worker spawns; used only for watchdog log messages. Cleared when the
+# job is claimed complete or a new cycle begins.
+current_wav_path = None
 tap_ref = None
 source_ref = None
 SHUTDOWN_SIGNALS = {signal.SIGTERM, signal.SIGINT}
@@ -296,13 +308,14 @@ def _claim_job_completion(job_id):
     a new recording cycle) from clobbering the active job's state or pasting old
     text into the user's current app.
     """
-    global state, state_ts, current_hotkey, current_mode
+    global state, state_ts, current_hotkey, current_mode, current_wav_path
     with state_lock:
         if state == "processing" and current_job_id == job_id:
             state = "idle"
             state_ts = time.monotonic()
             current_hotkey = None
             current_mode = None
+            current_wav_path = None
             return True
         return False
 
@@ -325,13 +338,24 @@ def _watchdog_tick():
             finish_reason = "hard recording limit"
 
         if state == "processing" and elapsed > PROCESSING_TIMEOUT_SEC:
-            log(f"watchdog: stuck in processing for {elapsed:.0f}s, resetting")
+            pending = current_wav_path
+            log(
+                f"watchdog: stuck in processing for {elapsed:.0f}s, resetting; "
+                + (
+                    f"recording preserved in .pending: {pending.name}"
+                    if pending is not None
+                    else "no pending recording tracked"
+                )
+            )
             state = "idle"
             state_ts = time.monotonic()
             current_job_id += 1
             current_hotkey = None
             current_mode = None
-            overlay.hide()
+            # Surface the failure instead of silently dropping the spinner;
+            # the background retry loop will re-transcribe the preserved WAV.
+            overlay.flash_error()
+            current_wav_path = None
 
     if finish_keycode is not None:
         log(
@@ -350,6 +374,34 @@ def watchdog_loop():
             _watchdog_tick()
         except Exception as e:
             log(f"watchdog loop error: {e}")
+
+
+PENDING_RETRY_POLL_SEC = 300
+
+
+def pending_retry_loop():
+    """
+    Re-transcribe recordings that failed mid-session (dead network, provider
+    outage) so they no longer wait for the next app restart. Mirrors startup
+    recovery semantics: combined text goes to the clipboard only, never an
+    unprompted paste. Runs only while idle and under _clipboard_gate so its
+    clipboard write cannot race a live dictation paste.
+    """
+    while True:
+        time.sleep(PENDING_RETRY_POLL_SEC)
+        try:
+            with state_lock:
+                idle = state == "idle"
+                has_pending = current_wav_path is None
+            if not idle or not has_pending:
+                continue
+            with _clipboard_gate:
+                with state_lock:
+                    still_idle = state == "idle"
+                if still_idle:
+                    recover_pending_recordings()
+        except Exception as e:
+            log(f"pending retry loop error: {e}")
 
 
 def copy_to_clipboard(text):
@@ -488,7 +540,7 @@ def process_pending_recording(path, job_id, mode):
         elif mode == MODE_POLISH:
             text = transcriber.transcribe_to_polish_sync(path)
         else:
-            text = transcriber.transcribe_wav_sync(path, language=DICTATE_LANGUAGE)
+            text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
         error = True
@@ -498,27 +550,31 @@ def process_pending_recording(path, job_id, mode):
 
     # Claim ownership of THIS job — exact job_id match. A bare state check
     # would also accept a *newer* job's "processing" state and let a stale
-    # worker paste old text into whatever the user is doing now.
-    if not _claim_job_completion(job_id):
-        log(f"stale worker abandoned: {path.name}")
-        return
+    # worker paste old text into whatever the user is doing now. The claim
+    # and the clipboard mutation share _clipboard_gate so the background
+    # recovery pass can never interleave its own clipboard write between
+    # this job's claim and its paste.
+    with _clipboard_gate:
+        if not _claim_job_completion(job_id):
+            log(f"stale worker abandoned: {path.name}")
+            return
 
-    if error:
-        overlay.flash_error()
-        return  # keep file for retry
-
-    if text:
-        if paste_text(text):
-            log(f"pasted {len(text)} chars from {path.name}")
-            overlay.hide()
-        else:
+        if error:
             overlay.flash_error()
-            return  # keep file
-    else:
-        log(f"no speech detected in {path.name}")
-        overlay.hide()
+            return  # keep file for retry
 
-    delete_pending_recording(path)
+        if text:
+            if paste_text(text):
+                log(f"pasted {len(text)} chars from {path.name}")
+                overlay.hide()
+            else:
+                overlay.flash_error()
+                return  # keep file
+        else:
+            log(f"no speech detected in {path.name}")
+            overlay.hide()
+
+        delete_pending_recording(path)
 
 
 RECOVERY_SEPARATOR = "\n\n---\n\n"
@@ -572,6 +628,7 @@ def recover_pending_recordings():
 
     log(f"found {len(paths)} pending recording(s)")
     recovered = []  # (path, text); text may be empty for hallucination/silence
+    skipped = 0
     for index, path in enumerate(paths):
         if not is_valid_wav(path):
             quarantine_path(path, "corrupt WAV header")
@@ -583,26 +640,29 @@ def recover_pending_recordings():
             elif mode == MODE_POLISH:
                 text = transcriber.transcribe_to_polish_sync(path)
             else:
-                text = transcriber.transcribe_wav_sync(path, language=DICTATE_LANGUAGE)
-        except TranscriptionError as e:
-            log(f"recovery transcription error {path.name}: {e}")
-            remaining = len(paths) - index
-            log(
-                f"recovery paused with {remaining} recording(s) pending so "
-                "hotkeys can start; provider retry deferred"
-            )
-            break  # provider is unavailable; don't block startup once per file
-        except Exception as e:
-            log(f"recovery processing error {path.name}: {e}")
-            remaining = len(paths) - index
-            log(
-                f"recovery paused with {remaining} recording(s) pending so "
-                "hotkeys can start"
-            )
+                text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
+        except ProviderUnavailableError as e:
+            # Provider is unreachable; the remaining files stay pending and
+            # the background retry loop will pick them up once it's back.
+            log(f"recovery paused: provider unreachable ({e}); "
+                f"{len(paths) - index} recording(s) pending")
             break
+        except Exception as e:
+            # A file-specific problem (e.g. the provider persistently returns
+            # an empty transcript for this audio). Skip it so one poison file
+            # can't block recovery of every other recording.
+            log(f"recovery skipping {path.name}: {e}")
+            skipped += 1
+            continue
         recovered.append((path, text))
 
     non_empty = [(p, t) for p, t in recovered if t]
+
+    if skipped:
+        log(
+            f"recovery skipped {skipped} recording(s) with file-specific "
+            "errors; they stay in .pending"
+        )
 
     if non_empty:
         combined = RECOVERY_SEPARATOR.join(t for _, t in non_empty)
@@ -626,7 +686,8 @@ def _begin_recording(keycode, mode):
     can see the new "recording" state but the wrong (stale) hotkey/mode.
     Returns True on success.
     """
-    global state, state_ts, current_hotkey, current_mode
+    global state, state_ts, current_job_id, current_hotkey, current_mode
+    global current_wav_path
     with state_lock:
         if state != "idle":
             return False
@@ -634,6 +695,7 @@ def _begin_recording(keycode, mode):
         state_ts = time.monotonic()
         current_hotkey = keycode
         current_mode = mode
+        current_wav_path = None
         return True
 
 
@@ -714,6 +776,8 @@ def on_key_up(keycode):
         return
 
     overlay.show("loading", label=MODE_LABELS.get(mode))
+    global current_wav_path
+    current_wav_path = wav_path
     try:
         threading.Thread(
             target=process_pending_recording,
@@ -722,6 +786,7 @@ def on_key_up(keycode):
         ).start()
     except Exception as e:
         log(f"processing worker start error {wav_path.name}: {e}")
+        current_wav_path = None
         if _claim_job_completion(job_id):
             overlay.flash_error()
 
@@ -840,7 +905,10 @@ def main():
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
         f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "
-        f"Polish STT: {POLISH_STT_BACKEND}; translation backend: {translator}"
+        f"Polish STT: {POLISH_STT_BACKEND}; translation backend: {translator}; "
+        f"dictation correction: "
+        f"{f'Mistral {MISTRAL_CORRECTION_MODEL}' if CORRECT_DICTATION else 'off'}; "
+        f"context bias terms: {len(CONTEXT_BIAS_TERMS)}"
     )
     microphone_status = microphone_authorization_status()
     if microphone_status in {
@@ -864,6 +932,7 @@ def main():
     recover_pending_recordings()
 
     threading.Thread(target=watchdog_loop, daemon=True).start()
+    threading.Thread(target=pending_retry_loop, daemon=True).start()
     threading.Thread(target=run_event_tap, daemon=True).start()
     time.sleep(0.1)
 

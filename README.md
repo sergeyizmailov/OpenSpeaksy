@@ -158,6 +158,11 @@ The translate path (right ⌥) does Voxtral transcription → LLM translation �
 | `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate and refine English/Polish output |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
 | `ELEVENLABS_MODEL` | `scribe_v2` | Model used by the retained ElevenLabs fallback |
+| `OPENSPEAKSY_CORRECT_DICTATION` | `0` | Set to `1` for a second LLM pass that cleans up dictation; off by default because it also normalizes domain jargon into different words |
+| `MISTRAL_CORRECTION_MODEL` | `mistral-medium-3-5` | Model used by the dictation cleanup pass |
+| `MISTRAL_CORRECTION_TEMPERATURE` | `0.0` | Raising it was measured to let the model invert the speaker's meaning; leave it alone |
+| `OPENSPEAKSY_CORRECTION_MIN_CHARS` | `40` | Transcripts shorter than this skip correction — too little context, most visible latency |
+| `OPENSPEAKSY_GLOSSARY` | empty | Comma-separated names and terms to spell exactly, e.g. `Voxtral, nginx, Binom`. Single-word entries are also sent to Voxtral as `context_bias` (up to 100), which steers transcription itself at no measurable latency cost; multi-word entries are used only by the optional cleanup pass |
 
 After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
 
@@ -173,6 +178,10 @@ launchctl load   ~/Library/LaunchAgents/com.openspeaksy.plist
 ## How it works
 
 A single LaunchAgent (`com.openspeaksy`) runs `main.py`. A process lock prevents a manual second launch from registering duplicate hotkeys or pasting twice. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to Mistral Voxtral, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
+
+Dictate mode (right ⌘) pastes the Voxtral transcript as-is. An optional cleanup pass is available but **off by default** (`OPENSPEAKSY_CORRECT_DICTATION=1` enables it): for transcripts of 40+ characters it sends the text to `mistral-medium-3-5`. Fast recognition is lossy: it mishears words, swallows endings, drops short words, and cuts phrases off mid-thought, so sentences read as broken even when the speaker was clear. The pass infers the subject matter of the text and uses it to repair misheard words and mangled product names, restore what was dropped, finish cut-off phrases, split run-on speech into sentences, and reword phrasing that is barely grammatical — while keeping the speaker's own wording, tone, and register, and never adding facts the speaker did not say.
+
+The result is accepted only if it still looks like a cleanup of the original: markdown and wrapping quotes are stripped, growth beyond 60% is discarded as an answer rather than an edit, and shrinkage beyond 50% as a summary. Both bounds are loose on purpose — collapsing spelled-out numbers into digits and tightening rambling speech are wanted, so the guard only catches a model that stopped editing and started writing its own text. Any failure or rejection pastes the raw transcript, so the pass can never cost you a recording. It adds roughly 0.5 s on a short phrase and 20 s on a 13-minute recording, since its cost tracks transcript length rather than audio length.
 
 Translate mode (right ⌥) asks Voxtral for Russian (`language="ru"`), then `mistral-medium-3-5` translates the Russian to English. For outputs of 40+ characters, a second Mistral call polishes awkward phrasing; if it errors, the first-pass translation is kept.
 

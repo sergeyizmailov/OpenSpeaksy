@@ -1,8 +1,10 @@
+import errno
 import io
 import json
+import socket
 import ssl
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request
 
 import pytest
@@ -82,6 +84,36 @@ def test_retry_budget_is_bounded():
             )
 
     assert urlopen.call_count == transcriber.REQUEST_MAX_ATTEMPTS
+
+
+def test_connect_failure_is_retried_once_only():
+    # DNS death must not burn the full server-error retry budget: each
+    # attempt blocks for the whole socket timeout while the network is down.
+    with patch.object(
+        transcriber,
+        "urlopen",
+        side_effect=URLError(socket.gaierror(errno.ENOENT, "nodename nor servname")),
+    ) as urlopen:
+        with pytest.raises(transcriber.TranscriptionError):
+            transcriber._request_json(
+                Request("https://api.mistral.ai/"), "test request"
+            )
+
+    assert urlopen.call_count == transcriber.CONNECT_MAX_ATTEMPTS
+
+
+def test_connection_refused_is_retried_once_only():
+    with patch.object(
+        transcriber,
+        "urlopen",
+        side_effect=URLError(OSError(errno.ECONNREFUSED, "refused")),
+    ) as urlopen:
+        with pytest.raises(transcriber.TranscriptionError):
+            transcriber._request_json(
+                Request("https://api.mistral.ai/"), "test request"
+            )
+
+    assert urlopen.call_count == transcriber.CONNECT_MAX_ATTEMPTS
 
 
 def test_empty_non_silent_transcription_is_retried(monkeypatch, tmp_path):

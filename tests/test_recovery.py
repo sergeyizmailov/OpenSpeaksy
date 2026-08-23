@@ -6,7 +6,7 @@ class StubTranscriber:
         self.text = text
         self.error = error
 
-    def transcribe_wav_sync(self, path, language=None, backend=None):
+    def transcribe_and_correct_sync(self, path, language=None):
         if self.error:
             raise self.error
         return self.text
@@ -71,9 +71,9 @@ def test_recovery_stops_after_provider_failure_to_unblock_hotkeys(
     calls = []
 
     class FailingTranscriber:
-        def transcribe_wav_sync(self, path, language=None, backend=None):
+        def transcribe_and_correct_sync(self, path, language=None):
             calls.append(path)
-            raise main.TranscriptionError("provider unavailable")
+            raise main.ProviderUnavailableError("nodename nor servname")
 
     monkeypatch.setattr(main, "PENDING_DIR", pending)
     monkeypatch.setattr(main, "QUARANTINE_DIR", pending / "quarantine")
@@ -84,6 +84,43 @@ def test_recovery_stops_after_provider_failure_to_unblock_hotkeys(
 
     assert calls == [first]
     assert first.exists() and second.exists()
+
+
+def test_recovery_skips_poison_file_and_recovers_rest(tmp_path, monkeypatch):
+    pending = tmp_path / ".pending"
+    pending.mkdir()
+    poison = pending / "20260721-000000-a.dictate.wav"
+    good = pending / "20260721-000001-b.dictate.wav"
+    _valid_wav(poison)
+    _valid_wav(good)
+    clipboard = []
+
+    class PoisonThenGoodTranscriber:
+        def __init__(self):
+            self.calls = []
+
+        def transcribe_and_correct_sync(self, path, language=None):
+            self.calls.append(path)
+            if path == poison:
+                raise main.TranscriptionError(
+                    "provider returned an empty transcript for non-silent audio"
+                )
+            return "recovered "
+
+    stub = PoisonThenGoodTranscriber()
+    monkeypatch.setattr(main, "PENDING_DIR", pending)
+    monkeypatch.setattr(main, "QUARANTINE_DIR", pending / "quarantine")
+    monkeypatch.setattr(main, "FALLBACK_PENDING_DIR", tmp_path / "fallback")
+    monkeypatch.setattr(main, "transcriber", stub)
+    monkeypatch.setattr(main, "copy_to_clipboard", clipboard.append)
+
+    main.recover_pending_recordings()
+
+    # Both files were attempted; the poison file stays for a later retry,
+    # the good one was recovered to the clipboard and deleted.
+    assert stub.calls == [poison, good]
+    assert clipboard == ["recovered "]
+    assert poison.exists() and not good.exists()
 
 
 def test_recovery_processes_fallback_storage(tmp_path, monkeypatch):
