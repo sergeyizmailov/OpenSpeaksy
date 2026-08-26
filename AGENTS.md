@@ -12,8 +12,8 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
    keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
    `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
-   in the environment before running to skip its prompt;
-   `ELEVENLABS_API_KEY=...` optionally retains the Scribe v2 fallback.
+   in the environment before running to skip its prompt, and
+   `GEMINI_API_KEYS=key1,key2` to skip the Gemini prompt.
 4. After install, the user must manually grant **Input Monitoring** and
    **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
    & Security. Tell them which path to authorize. Do not try to do this
@@ -28,7 +28,7 @@ Read these files in order — they are short and explicit:
 
 - `main.py` — entry point, state machine, key handling, paste, watchdog, recovery
 - `recorder.py` — PortAudio capture
-- `transcriber.py` — Mistral/ElevenLabs STT plus the Mistral Medium translation client
+- `transcriber.py` — Gemini/Mistral STT plus the Mistral Medium translation client
 - `overlay.py` — NSPanel pill overlay
 - `launchd/com.openspeaksy.plist.template` — LaunchAgent definition
 
@@ -47,10 +47,10 @@ Conventions in this codebase:
   for a keycode that doesn't match `current_hotkey` is ignored — this is what
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
 - **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) routes through
-  `transcribe_and_correct_sync` (Voxtral → optional correction pass for
-  transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
+  `transcribe_and_correct_sync` (selected STT backend → optional correction pass
+  for transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
   right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Voxtral RU → Mistral translate → optional
+  `transcribe_and_translate_sync` (Gemini RU → Mistral translate → optional
   refine pass for outputs ≥ `REFINE_MIN_CHARS`); right Shift (`MODE_POLISH`)
   mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The
   mode is captured under `state_lock` in `_begin_recording` and consumed by
@@ -83,9 +83,22 @@ Conventions in this codebase:
   corrupt WAVs beside the source directory.
 - **Permissions**: `.pending/` is `0700`, files are `0600`. Don't loosen
   this without thinking about what dictated audio leaks imply.
-- **One required provider key**: `MISTRAL_API_KEY` authenticates both Voxtral
-  transcription and Mistral Medium translation. ElevenLabs is optional and is
-  used only when explicitly selected as an STT backend.
+- **Two provider keys in play**: `GEMINI_API_KEYS` (comma-separated) does all
+  speech-to-text; `MISTRAL_API_KEY` does translation only. Translation ALWAYS
+  goes to Mistral, so its key is required whatever `OPENSPEAKSY_STT_BACKEND` is.
+  Mistral Voxtral stays wired as the alternate STT backend but is unused.
+- **Gemini quota is per project, so keys are a resource**: each key in
+  `GEMINI_API_KEYS` gets its own `_SlidingWindowQuota` and a request takes the
+  first key with room. Adding a key raises the ceiling; reusing one does not
+  (duplicates are dropped). A 429 abandons that key immediately rather than
+  retrying it, via `_request_json(..., retry_throttling=False)` — do not extend
+  that flag to other providers, where waiting out a 429 is still correct.
+- **Gemini STT is not the usual Gemini endpoint**: `gemini-3.5-transcribe` is
+  called through `POST /v1beta/interactions`, and the transcript is nested in
+  `steps[].content[].text`. `generateContent` returns HTTP 200 with an empty
+  part for this model instead of failing, so a wrong endpoint looks like a
+  silent model rather than an error. See `.notes/index.md` for the full
+  contract, including why a missing `steps` key means silence.
 
 If you change the LaunchAgent label (`com.openspeaksy`), also update
 `LOG_DIR` in `main.py` and the launchctl commands in scripts/install.sh

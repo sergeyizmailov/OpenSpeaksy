@@ -15,6 +15,6 @@ def test_intentionally_repeated_sentences_are_preserved():
         "Эту строку нужно оставить два раза. Эту строку нужно оставить два раза."
     )
 
-    result = StubTranscriber(text).transcribe_wav_sync("unused.wav")
+    result = StubTranscriber(text).transcribe_wav_sync("unused.wav", backend="mistral")
 
     assert result == text + " "

@@ -2,13 +2,13 @@
 
 # OpenSpeaksy
 
-**Voice dictation for macOS, powered by Mistral Voxtral Mini Transcribe 2.**
+**Voice dictation for macOS, powered by Gemini 3.5 Transcribe.**
 Hold right Command, speak, let go. The text appears in any app.
 
 [![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-lightgrey.svg)]()
-[![Backend: Mistral](https://img.shields.io/badge/backend-Mistral%20Voxtral-black.svg)](https://docs.mistral.ai/models/model-cards/voxtral-mini-transcribe-26-02)
+[![Backend: Gemini](https://img.shields.io/badge/backend-Gemini%203.5%20Transcribe-black.svg)](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-5-transcribe/)
 
 <br>
 
@@ -20,7 +20,7 @@ Hold right Command, speak, let go. The text appears in any app.
 
 ## An open alternative to Wispr Flow, Superwhisper
 
-Same idea with your own API credentials: Mistral Voxtral Mini Transcribe 2 handles transcription, while Mistral Medium 3.5 translates Russian into English or Polish. ElevenLabs Scribe v2 remains available as a fallback. No OpenSpeaksy account, ads, or tracking.
+Same idea with your own API credentials: Gemini 3.5 Transcribe handles transcription, while Mistral Medium 3.5 translates Russian into English or Polish. No OpenSpeaksy account, ads, or tracking.
 
 | | OpenSpeaksy | Typical paid app |
 |---|---|---|
@@ -36,7 +36,7 @@ Same idea with your own API credentials: Mistral Voxtral Mini Transcribe 2 handl
 ## What you get
 
 - **Open.** MIT licensed. No OpenSpeaksy account or telemetry; credentials stay in your local LaunchAgent plist.
-- **Accurate.** Voxtral Mini Transcribe 2 provides fast batch transcription across 13 supported languages.
+- **Accurate.** Gemini 3.5 Transcribe covers 85+ languages and handles domain jargon without a custom vocabulary list.
 - **Multilingual.** Auto-detects supported languages and handles Russian and English well.
 - **Reliable.** Recordings are queued to disk; nothing is lost if the transcription service is unreachable.
 - **Drop-in install.** Hand the repo to any AI coding agent — it sets everything up.
@@ -48,7 +48,6 @@ Pick the path that fits you. Both end up at the same place: a working install in
 ### Prerequisites — one required API key
 
 - **Mistral (required):** create a [Mistral API key](https://console.mistral.ai/api-keys) for Voxtral transcription and Mistral Medium translation.
-- **ElevenLabs (optional):** add a key only if you want the retained Scribe v2 fallback.
 
 ### Option A — One-prompt install (recommended if you don't use Terminal)
 
@@ -61,7 +60,7 @@ git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
 cd ~/OpenSpeaksy
 ./scripts/install.sh
 
-The installer will ask for my Mistral API key, plus an optional ElevenLabs fallback key — I'll paste them when prompted.
+The installer will ask for my Gemini and Mistral API keys — I'll paste them when prompted.
 Then walk me through granting Input Monitoring and Accessibility permissions
 in System Settings → Privacy & Security.
 ```
@@ -80,7 +79,7 @@ cd ~/OpenSpeaksy
 ./scripts/install.sh
 ```
 
-When prompted, paste your Mistral API key; optionally retain an ElevenLabs fallback key. The installer creates a Python venv, generates the LaunchAgent plist (stored at `0600` so only your user can read it), and starts the background service.
+When prompted, paste your Gemini API key (or several, comma-separated) and your Mistral API key. The installer creates a Python venv, generates the LaunchAgent plist (stored at `0600` so only your user can read it), and starts the background service.
 
 **2.** Grant macOS permissions. Open **System Settings → Privacy & Security**:
 
@@ -103,8 +102,8 @@ You should see `OpenSpeaksy running — hold right Command (dictate), right Opti
 Three hotkeys:
 
 - **Right ⌘** — dictate in a Voxtral-supported language; the text pastes verbatim.
-- **Right ⌥ (Option)** — dictate Russian, paste English. Voxtral transcribes in Russian, then Mistral Medium translates it before pasting.
-- **Right ⇧ (Shift)** — dictate Russian, paste Polish. Voxtral transcribes with `language="ru"`, then Mistral Medium translates the result into Polish.
+- **Right ⌥ (Option)** — dictate Russian, paste English. Gemini transcribes in Russian, then Mistral Medium translates it before pasting.
+- **Right ⇧ (Shift)** — dictate Russian, paste Polish. Gemini transcribes with `language="ru"`, then Mistral Medium translates the result into Polish.
 
 Hold the key, speak, release. The text pastes into the focused field and stays in your clipboard.
 
@@ -151,24 +150,40 @@ The translate path (right ⌥) does Voxtral transcription → LLM translation �
 
 | Variable | Default | Effect |
 |---|---|---|
-| `OPENSPEAKSY_STT_BACKEND` | `mistral` | STT provider: `mistral` or `elevenlabs` |
+| `OPENSPEAKSY_STT_BACKEND` | `gemini` | STT provider: `gemini` or `mistral` |
 | `OPENSPEAKSY_DICTATE_LANGUAGE` | empty | Language hint for right Command; empty means auto-detect, `ru` forces Russian |
-| `OPENSPEAKSY_POLISH_STT_BACKEND` | `mistral` | STT provider used only by right Shift; the language hint is always Russian |
+| `OPENSPEAKSY_POLISH_STT_BACKEND` | inherits `OPENSPEAKSY_STT_BACKEND` | STT provider used only by right Shift; the language hint is always Russian |
 | `MISTRAL_MODEL` | `voxtral-mini-2602` | Primary speech-to-text model |
 | `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate and refine English/Polish output |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
-| `ELEVENLABS_MODEL` | `scribe_v2` | Model used by the retained ElevenLabs fallback |
+| `GEMINI_API_KEYS` | empty | Comma-separated Gemini keys. The free per-minute quota is metered per project, so each key adds its own allowance |
+| `GEMINI_MODEL` | `gemini-3.5-transcribe` | Model used when the STT backend is `gemini` |
+| `OPENSPEAKSY_GEMINI_RPM` | `3` | Requests per minute assumed available per key; the limiter diverts to the next key before the provider rejects the call |
 | `OPENSPEAKSY_CORRECT_DICTATION` | `0` | Set to `1` for a second LLM pass that cleans up dictation; off by default because it also normalizes domain jargon into different words |
 | `MISTRAL_CORRECTION_MODEL` | `mistral-medium-3-5` | Model used by the dictation cleanup pass |
 | `MISTRAL_CORRECTION_TEMPERATURE` | `0.0` | Raising it was measured to let the model invert the speaker's meaning; leave it alone |
 | `OPENSPEAKSY_CORRECTION_MIN_CHARS` | `40` | Transcripts shorter than this skip correction — too little context, most visible latency |
-| `OPENSPEAKSY_GLOSSARY` | empty | Comma-separated names and terms to spell exactly, e.g. `Voxtral, nginx, Binom`. Single-word entries are also sent to Voxtral as `context_bias` (up to 100), which steers transcription itself at no measurable latency cost; multi-word entries are used only by the optional cleanup pass |
+
+The `gemini` backend uses Gemini 3.5 Transcribe through Google's Interactions API
+(`POST /v1beta/interactions`), not the `generateContent` endpoint the rest of Gemini
+uses — that endpoint accepts the request for this model and returns an empty result.
+Translation stays on Mistral regardless of the STT backend, so `MISTRAL_API_KEY` is
+still required alongside the Gemini keys.
+
+Measured on this host it transcribes Russian media-buying jargon noticeably better
+than Voxtral, but takes about 3 s against Voxtral's 0.5 s. The free tier allows only
+**3 requests per minute per project**, so list several keys in `GEMINI_API_KEYS`: each
+request takes the first key with quota left, giving 9 dictations per minute across
+three keys. A key that returns HTTP 429 is abandoned immediately rather than retried,
+and its window is marked spent so later requests skip it. When every key is exhausted
+the transcription fails fast and the recording stays in `.pending/` for recovery on
+the next start — no audio is lost.
 
 After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
 
 ### Rotate or change the API key
 
-Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change `MISTRAL_API_KEY` or the optional `ELEVENLABS_API_KEY`, then:
+Edit `~/Library/LaunchAgents/com.openspeaksy.plist`, change `GEMINI_API_KEYS` or `MISTRAL_API_KEY`, then:
 
 ```bash
 launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
@@ -185,7 +200,7 @@ The result is accepted only if it still looks like a cleanup of the original: ma
 
 Translate mode (right ⌥) asks Voxtral for Russian (`language="ru"`), then `mistral-medium-3-5` translates the Russian to English. For outputs of 40+ characters, a second Mistral call polishes awkward phrasing; if it errors, the first-pass translation is kept.
 
-Polish mode (right ⇧) mirrors translate mode: it requests Russian transcription (`language="ru"`), then asks Mistral Medium for a Polish translation and optionally refines longer output. `OPENSPEAKSY_POLISH_STT_BACKEND` can select the retained ElevenLabs STT provider without changing that Russian-only contract.
+Polish mode (right ⇧) mirrors translate mode: it requests Russian transcription (`language="ru"`), then asks Mistral Medium for a Polish translation and optionally refines longer output. `OPENSPEAKSY_POLISH_STT_BACKEND` can select a different STT provider without changing that Russian-only contract.
 
 A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. The pending filename encodes the selected mode, so recovery after a crash preserves intent. If `.pending/` cannot be written, OpenSpeaksy atomically saves to a private fallback directory under `~/Library/Application Support/OpenSpeaksy/pending/`. If a provider is unreachable, the audio remains queued; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
 
@@ -226,8 +241,8 @@ Removes the LaunchAgent and logs. Project files and any queued recordings are le
 
 ## Built on
 
-- [Mistral Audio Transcriptions](https://docs.mistral.ai/models/model-cards/voxtral-mini-transcribe-26-02) — Voxtral Mini Transcribe 2
-- [ElevenLabs Speech to Text](https://elevenlabs.io/docs/overview/capabilities/speech-to-text) — retained Scribe v2 fallback
+- [Gemini 3.5 Transcribe](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-5-transcribe/) — speech-to-text
+- [Mistral Audio Transcriptions](https://docs.mistral.ai/models/model-cards/voxtral-mini-transcribe-26-02) — Voxtral Mini Transcribe 2, the alternate STT backend
 - [Mistral Medium 3.5](https://docs.mistral.ai/models/model-cards/mistral-medium-3-5-26-04) — Russian-to-English/Polish translation
 - [PyObjC](https://github.com/ronaldoussoren/pyobjc) — for the macOS event tap and overlay
 

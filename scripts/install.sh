@@ -3,15 +3,15 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Requires one Mistral API key and optionally accepts an ElevenLabs key, then
+# Requires Gemini and Mistral API keys, then
 # writes them into the plist's EnvironmentVariables. Mistral Voxtral handles
-# transcription, Mistral Medium handles translations, and ElevenLabs remains a
+# transcription, and Mistral Medium handles translations, then
 # selectable speech-to-text fallback.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
 #          MISTRAL_API_KEY=key      (skip the Mistral prompt)
-#          ELEVENLABS_API_KEY=key   (optional retained fallback)
+#          GEMINI_API_KEYS=key1,key2   (one or more, comma-separated)
 
 set -euo pipefail
 
@@ -57,8 +57,8 @@ fi
 step "Configuring Mistral API key"
 if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses Mistral Voxtral Mini Transcribe 2 for speech-to-text and
-    Mistral Medium for Russian-to-English and Russian-to-Polish translation.
+    OpenSpeaksy uses Mistral Medium for Russian-to-English and
+    Russian-to-Polish translation.
     Create an API key at: https://console.mistral.ai/api-keys
 
     The key is written only into your local plist
@@ -71,24 +71,25 @@ fi
 [[ -n "$MISTRAL_API_KEY" ]] || fail "no Mistral API key provided"
 note "Got Mistral key ending in ...${MISTRAL_API_KEY: -4}"
 
-step "Configuring optional ElevenLabs fallback"
-if [[ -z "${ELEVENLABS_API_KEY:-}" ]]; then
+step "Configuring Gemini API key(s)"
+if [[ -z "${GEMINI_API_KEYS:-}" ]]; then
     cat <<EOF
-    ElevenLabs Scribe v2 can be retained as a fallback speech-to-text backend.
-    Create an API key at: https://elevenlabs.io/app/developers/api-keys
+    OpenSpeaksy uses Gemini 3.5 Transcribe for speech-to-text.
+    Create an API key at: https://aistudio.google.com/apikey
+
+    The free tier allows 3 requests per minute PER PROJECT, so you can paste
+    several comma-separated keys from different Google projects to raise that
+    ceiling — each key carries its own quota.
 
     The key is written only into your local plist
     ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
 
 EOF
-    read -rs -p "    Paste an ElevenLabs API key, or press Enter to skip: " ELEVENLABS_API_KEY
+    read -rs -p "    Paste your Gemini API key(s), comma-separated: " GEMINI_API_KEYS
     echo
 fi
-if [[ -n "$ELEVENLABS_API_KEY" ]]; then
-    note "Got ElevenLabs key ending in ...${ELEVENLABS_API_KEY: -4}"
-else
-    note "ElevenLabs fallback not configured"
-fi
+[[ -n "$GEMINI_API_KEYS" ]] || fail "no Gemini API key provided"
+note "Got $(printf '%s' "$GEMINI_API_KEYS" | awk -F, '{print NF}') Gemini key(s)"
 
 # --- main app venv ----------------------------------------------------------
 
@@ -109,14 +110,14 @@ mkdir -p "$LAUNCH_AGENTS"
 
 # Use Python's plistlib so paths and key values with XML-sensitive characters
 # are escaped correctly — sed-substitution would corrupt the plist.
-MISTRAL_API_KEY="$MISTRAL_API_KEY" ELEVENLABS_API_KEY="$ELEVENLABS_API_KEY" \
+MISTRAL_API_KEY="$MISTRAL_API_KEY" GEMINI_API_KEYS="$GEMINI_API_KEYS" \
 "$PYTHON_RUNTIME" - "$PROJECT_ROOT/launchd/${LABEL_APP}.plist.template" \
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
                     "$PROJECT_ROOT" <<'PYEOF'
 import os, sys, plistlib
 template, target, project_root = sys.argv[1:4]
 mistral_key = os.environ.pop("MISTRAL_API_KEY")
-elevenlabs_key = os.environ.pop("ELEVENLABS_API_KEY")
+gemini_keys = os.environ.pop("GEMINI_API_KEYS")
 with open(template, "rb") as f:
     pl = plistlib.load(f)
 
@@ -128,7 +129,7 @@ def replace(node):
     if isinstance(node, str):
         return (node.replace("__PROJECT_ROOT__", project_root)
                     .replace("__MISTRAL_API_KEY__", mistral_key)
-                    .replace("__ELEVENLABS_API_KEY__", elevenlabs_key))
+                    .replace("__GEMINI_API_KEYS__", gemini_keys))
     return node
 
 # Open with 0600 from the start so the API key is never world-readable,

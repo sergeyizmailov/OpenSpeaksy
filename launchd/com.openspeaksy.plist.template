@@ -16,7 +16,7 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>OPENSPEAKSY_STT_BACKEND</key>
-        <string>mistral</string>
+        <string>gemini</string>
         <key>MISTRAL_API_KEY</key>
         <string>__MISTRAL_API_KEY__</string>
         <key>MISTRAL_MODEL</key>
@@ -26,9 +26,9 @@
         <key>OPENSPEAKSY_DICTATE_LANGUAGE</key>
         <string></string>
         <key>OPENSPEAKSY_POLISH_STT_BACKEND</key>
-        <string>mistral</string>
-        <key>ELEVENLABS_API_KEY</key>
-        <string>__ELEVENLABS_API_KEY__</string>
+        <string>gemini</string>
+        <key>GEMINI_API_KEYS</key>
+        <string>__GEMINI_API_KEYS__</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

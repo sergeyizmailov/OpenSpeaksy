@@ -36,11 +36,11 @@ def test_empty_string_not_hallucination():
 def test_known_phrase_is_filtered_for_silent_audio(tmp_path, monkeypatch):
     wav = tmp_path / "silent.wav"
     write_wav(np.zeros(16000, dtype=np.float32), wav)
-    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "elevenlabs")
+    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "mistral")
 
     with patch.object(
         Transcriber,
-        "_transcribe_elevenlabs",
+        "_transcribe_mistral",
         return_value="Спасибо за просмотр",
     ):
         assert Transcriber().transcribe_wav_sync(wav) == ""
@@ -49,11 +49,11 @@ def test_known_phrase_is_filtered_for_silent_audio(tmp_path, monkeypatch):
 def test_legitimate_phrase_is_kept_when_spoken(tmp_path, monkeypatch):
     wav = tmp_path / "speech.wav"
     write_wav(np.full(16000, 0.1, dtype=np.float32), wav)
-    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "elevenlabs")
+    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "mistral")
 
     with patch.object(
         Transcriber,
-        "_transcribe_elevenlabs",
+        "_transcribe_mistral",
         return_value="Thank you",
     ):
         assert Transcriber().transcribe_wav_sync(wav) == "Thank you "

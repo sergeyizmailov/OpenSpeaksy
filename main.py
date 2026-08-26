@@ -30,11 +30,11 @@ from PyObjCTools import AppHelper
 
 from recorder import Recorder
 from transcriber import (
-    CONTEXT_BIAS_TERMS,
     CORRECT_DICTATION,
     DICTATE_LANGUAGE,
-    ELEVENLABS_API_KEY,
-    ELEVENLABS_MODEL,
+    GEMINI_API_KEYS,
+    GEMINI_MODEL,
+    GEMINI_REQUESTS_PER_WINDOW,
     MISTRAL_API_KEY,
     MISTRAL_CORRECTION_MODEL,
     MISTRAL_MODEL,
@@ -876,39 +876,39 @@ def main():
         )
         os._exit(1)
 
-    if STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
+    if "gemini" in {STT_BACKEND, POLISH_STT_BACKEND} and not GEMINI_API_KEYS:
         log(
-            "FATAL: no ElevenLabs API key configured. Set ELEVENLABS_API_KEY in "
+            "FATAL: no Gemini API key configured. Set GEMINI_API_KEYS (comma-"
+            "separated) or GEMINI_API_KEY in "
             "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
             "and reload."
         )
         os._exit(1)
     if not MISTRAL_API_KEY:
         log(
-            "FATAL: no Mistral API key configured; transcription and translation "
+            "FATAL: no Mistral API key configured; the translate hotkeys "
             "require it. Set MISTRAL_API_KEY in "
             "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
             "and reload."
         )
         os._exit(1)
-    if POLISH_STT_BACKEND == "elevenlabs" and not ELEVENLABS_API_KEY:
-        log("FATAL: Polish STT backend is ElevenLabs but its API key is not configured")
-        os._exit(1)
-    if POLISH_STT_BACKEND == "mistral" and not MISTRAL_API_KEY:
-        log("FATAL: Polish STT backend is Mistral but its API key is not configured")
-        os._exit(1)
+
     translator = f"Mistral {MISTRAL_TRANSLATION_MODEL}"
     if STT_BACKEND == "mistral":
         stt = f"Mistral {MISTRAL_MODEL}"
-    elif STT_BACKEND == "elevenlabs":
-        stt = f"ElevenLabs {ELEVENLABS_MODEL}"
+    elif STT_BACKEND == "gemini":
+        stt = (
+            f"Gemini {GEMINI_MODEL} ({len(GEMINI_API_KEYS)} key(s), "
+            f"{GEMINI_REQUESTS_PER_WINDOW}/min each)"
+        )
+    else:
+        stt = STT_BACKEND
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
         f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "
         f"Polish STT: {POLISH_STT_BACKEND}; translation backend: {translator}; "
         f"dictation correction: "
-        f"{f'Mistral {MISTRAL_CORRECTION_MODEL}' if CORRECT_DICTATION else 'off'}; "
-        f"context bias terms: {len(CONTEXT_BIAS_TERMS)}"
+        f"{f'Mistral {MISTRAL_CORRECTION_MODEL}' if CORRECT_DICTATION else 'off'}"
     )
     microphone_status = microphone_authorization_status()
     if microphone_status in {

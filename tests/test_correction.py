@@ -28,9 +28,10 @@ def _ok_chat(content):
 @pytest.fixture
 def transcriber_module(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
+    # Pin STT: these tests are about the correction pass, not backend routing.
+    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
     # Shipped default is off; these tests exercise the pass itself.
     monkeypatch.setenv("OPENSPEAKSY_CORRECT_DICTATION", "1")
-    monkeypatch.delenv("OPENSPEAKSY_GLOSSARY", raising=False)
     import importlib
     import transcriber as t
     importlib.reload(t)
@@ -84,6 +85,7 @@ def test_correction_uses_its_own_model_and_temperature(transcriber_module, tmp_p
 def test_shipped_default_is_off(monkeypatch, tmp_path):
     """Dictation pastes the raw transcript unless the switch is set explicitly."""
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
+    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
     monkeypatch.delenv("OPENSPEAKSY_CORRECT_DICTATION", raising=False)
     import importlib
     import transcriber as t
@@ -132,64 +134,9 @@ def test_language_is_passed_through_to_transcription(transcriber_module, tmp_pat
     assert b'name="language"\r\n\r\nru' in mock.call_args_list[0].args[0].data
 
 
-def test_glossary_is_appended_to_the_system_prompt(transcriber_module, tmp_path, monkeypatch):
-    t = transcriber_module
-    monkeypatch.setattr(t, "CORRECTION_GLOSSARY", "Voxtral, nginx")
-    wav = _write_loud_wav(tmp_path)
-    with patch.object(
-        t, "urlopen", side_effect=[_ok_transcribe(LONG), _ok_chat(FIXED)]
-    ) as mock:
-        t.Transcriber().transcribe_and_correct_sync(wav)
-    system = json.loads(mock.call_args_list[1].args[0].data.decode())["messages"][0]
-    assert "Voxtral, nginx" in system["content"]
 
 
-def test_context_bias_terms_are_sent_with_the_audio(monkeypatch, tmp_path):
-    """One repeated form field per term, in the transcription request itself."""
-    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
-    monkeypatch.setenv("OPENSPEAKSY_GLOSSARY", "Binom, Facebook, лид")
-    import importlib
-    import transcriber as t
-    importlib.reload(t)
-    wav = _write_loud_wav(tmp_path)
-    with patch.object(t, "urlopen", side_effect=[_ok_transcribe(LONG)]) as mock:
-        t.Transcriber().transcribe_wav_sync(wav)
-    body = mock.call_args_list[0].args[0].data
-    assert body.count(b'name="context_bias"') == 3
-    for term in ("Binom", "Facebook", "лид"):
-        assert term.encode() in body
-    importlib.reload(t)
 
-
-def test_multi_word_glossary_entries_are_dropped_from_context_bias(monkeypatch):
-    """The provider rejects terms with whitespace, so they never reach it."""
-    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
-    monkeypatch.setenv("OPENSPEAKSY_GLOSSARY", "Binom, Claude Skills, , Kimi")
-    import importlib
-    import transcriber as t
-    importlib.reload(t)
-    assert t.CONTEXT_BIAS_TERMS == ["Binom", "Kimi"]
-    # The correction pass still gets the full glossary, phrases included.
-    assert "Claude Skills" in t.CORRECTION_GLOSSARY
-    importlib.reload(t)
-
-
-def test_context_bias_is_capped_at_the_provider_limit(monkeypatch):
-    monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
-    monkeypatch.setenv("OPENSPEAKSY_GLOSSARY", ",".join(f"term{i}" for i in range(150)))
-    import importlib
-    import transcriber as t
-    importlib.reload(t)
-    assert len(t.CONTEXT_BIAS_TERMS) == 100
-    importlib.reload(t)
-
-
-def test_no_glossary_sends_no_context_bias(transcriber_module, tmp_path):
-    t = transcriber_module
-    wav = _write_loud_wav(tmp_path)
-    with patch.object(t, "urlopen", side_effect=[_ok_transcribe(LONG)]) as mock:
-        t.Transcriber().transcribe_wav_sync(wav)
-    assert b"context_bias" not in mock.call_args_list[0].args[0].data
 
 
 def test_translate_mode_does_not_run_the_correction_pass(transcriber_module, tmp_path):
