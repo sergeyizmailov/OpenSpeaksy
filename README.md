@@ -161,6 +161,7 @@ The translate path (right ⌥) does Gemini transcription → Mistral translation
 | `GEMINI_API_KEY` | empty | Single Gemini key. Appended to `GEMINI_API_KEYS`; duplicates are dropped |
 | `GEMINI_MODEL` | `gemini-3.5-transcribe` | Model used when the STT backend is `gemini` |
 | `OPENSPEAKSY_GEMINI_RPM` | `3` | Requests per minute assumed available per key; the limiter diverts to the next key before the provider rejects the call |
+| `OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND` | `mistral` | Backend used when every Gemini key is rate-limited. Empty string makes the dictation fail instead |
 | `OPENSPEAKSY_CORRECT_DICTATION` | `0` | Set to `1` for a second LLM pass that cleans up dictation; off by default because it also normalizes domain jargon into different words |
 | `MISTRAL_CORRECTION_MODEL` | `mistral-medium-3-5` | Model used by the dictation cleanup pass |
 | `MISTRAL_CORRECTION_TEMPERATURE` | `0.0` | Raising it was measured to let the model invert the speaker's meaning; leave it alone |
@@ -180,10 +181,17 @@ overhead rather than processing time (2 s of audio takes 3.3 s, 8.6 s takes 3.6 
 so shorter recordings do not help. The free tier allows only **3 requests per minute
 per project**, so list several keys in `GEMINI_API_KEYS`: each request takes the
 first key with quota left, giving 9 dictations per minute across three keys. A key
-that returns HTTP 429 is abandoned immediately rather than retried, and its window is
-marked spent so later requests skip it. When every key is exhausted the transcription
-fails fast and the recording stays in `.pending/` for recovery on the next start, so
-no audio is lost.
+that returns HTTP 429 is abandoned immediately rather than retried, and it is held on
+cooldown for as long as the provider's own retry hint asks. That hint matters: the free
+tier enforces a second, longer-window cap (reported as `limit: 25`) that counting our
+own requests cannot see, so without it the limiter resumes against a key Google still
+refuses.
+
+When every key is throttled, transcription falls back to Voxtral
+(`OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND`), which has no comparable ceiling: a 0.5 s
+transcript with weaker jargon handling beats no paste at all. Set that variable to an
+empty string to fail instead, in which case the recording stays in `.pending/` and is
+recovered on the next start. Either way no audio is lost.
 
 After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
 

@@ -183,19 +183,42 @@ def test_each_key_gets_its_own_quota_before_the_next_is_touched(gemini, tmp_path
     assert _keys_used(mock) == ["key-one"] * 3 + ["key-two"] * 3 + ["key-three"] * 3
 
 
-def test_exhausting_every_key_fails_rather_than_pasting_nothing(gemini, tmp_path):
-    """
-    With all quota spent the recording must surface an error so main.py leaves
-    it in .pending for recovery.
-    """
-    wav = _write_loud_wav(tmp_path)
-    tr = gemini.Transcriber()
+def _spend_every_key(gemini, tr, wav):
     with patch.object(gemini, "urlopen", side_effect=[_ok("t")] * 9):
         for _ in range(9):
             tr.transcribe_wav_sync(wav)
-    with patch.object(gemini, "urlopen") as mock:
-        with pytest.raises(gemini.TranscriptionError, match="rate-limited"):
-            tr.transcribe_wav_sync(wav)
+
+
+def test_exhausting_every_key_falls_back_to_voxtral(gemini, tmp_path):
+    """
+    A slower transcript beats no paste. Voxtral has no comparable per-minute
+    ceiling, so it takes over once every Gemini key is spent.
+    """
+    wav = _write_loud_wav(tmp_path)
+    tr = gemini.Transcriber()
+    _spend_every_key(gemini, tr, wav)
+
+    class _Mistral:
+        def read(self):
+            return json.dumps({"text": "voxtral"}).encode()
+
+    with patch.object(gemini, "urlopen", side_effect=[_Mistral()]) as mock:
+        assert tr.transcribe_wav_sync(wav) == "voxtral "
+    assert mock.call_args_list[0].args[0].full_url == gemini.MISTRAL_ENDPOINT
+
+
+def test_exhausting_every_key_can_be_made_fatal(gemini, tmp_path):
+    """
+    With the fallback disabled the recording must surface an error so main.py
+    leaves it in .pending for recovery instead of pasting nothing.
+    """
+    wav = _write_loud_wav(tmp_path)
+    tr = gemini.Transcriber()
+    _spend_every_key(gemini, tr, wav)
+    with patch.object(gemini, "GEMINI_EXHAUSTED_BACKEND", ""):
+        with patch.object(gemini, "urlopen") as mock:
+            with pytest.raises(gemini.TranscriptionError, match="rate-limited"):
+                tr.transcribe_wav_sync(wav)
     assert mock.call_count == 0
 
 
@@ -462,14 +485,35 @@ def test_a_real_defect_is_not_masked_by_a_routine_429(gemini, tmp_path):
     assert "403" in str(caught.value)
 
 
-def test_all_keys_throttled_still_reports_throttling(gemini, tmp_path):
-    """With nothing but 429s, the 429 is the honest answer."""
+def test_all_keys_throttled_falls_back_instead_of_failing(gemini, tmp_path):
+    """
+    Throttling on every key is the fallback's whole reason to exist, including
+    when the 429s arrive live rather than being predicted by the limiter.
+    """
     from urllib.error import HTTPError
     wav = _write_loud_wav(tmp_path)
     throttled = HTTPError("https://x/", 429, "rate", {}, io.BytesIO(b""))
-    with patch.object(gemini, "urlopen", side_effect=[throttled] * 3):
-        with pytest.raises(gemini.TranscriptionError) as caught:
-            gemini.Transcriber().transcribe_wav_sync(wav)
+
+    class _Mistral:
+        def read(self):
+            return json.dumps({"text": "voxtral"}).encode()
+
+    with patch.object(
+        gemini, "urlopen", side_effect=[throttled, throttled, throttled, _Mistral()]
+    ) as mock:
+        assert gemini.Transcriber().transcribe_wav_sync(wav) == "voxtral "
+    assert mock.call_args_list[-1].args[0].full_url == gemini.MISTRAL_ENDPOINT
+
+
+def test_all_keys_throttled_reports_throttling_when_fallback_is_off(gemini, tmp_path):
+    """With nothing but 429s and no fallback, the 429 is the honest answer."""
+    from urllib.error import HTTPError
+    wav = _write_loud_wav(tmp_path)
+    throttled = HTTPError("https://x/", 429, "rate", {}, io.BytesIO(b""))
+    with patch.object(gemini, "GEMINI_EXHAUSTED_BACKEND", ""):
+        with patch.object(gemini, "urlopen", side_effect=[throttled] * 3):
+            with pytest.raises(gemini.TranscriptionError) as caught:
+                gemini.Transcriber().transcribe_wav_sync(wav)
     assert "429" in str(caught.value)
 
 
@@ -486,3 +530,66 @@ def test_a_bad_request_on_a_later_key_also_stops_the_rotation(gemini, tmp_path):
         with pytest.raises(gemini.TranscriptionError):
             gemini.Transcriber().transcribe_wav_sync(wav)
     assert _keys_used(mock) == ["key-one", "key-two"]
+
+
+def test_retry_hint_is_parsed_from_the_gemini_429_body():
+    """
+    Gemini puts the wait in the body text, not a Retry-After header. Missing it
+    means resuming against a key the provider still refuses.
+    """
+    import io as _io
+    from urllib.error import HTTPError
+    import transcriber as t
+    body = (
+        "Quota exceeded for metric: ...free_tier_requests, limit: 25, "
+        "model: gemini-3.5-transcribe\nPlease retry in 34.5s."
+    )
+    assert t._retry_after_seconds(
+        HTTPError("https://x/", 429, body, {}, _io.BytesIO(b""))
+    ) == 34.5
+    # A real Retry-After header takes precedence.
+    assert t._retry_after_seconds(
+        HTTPError("https://x/", 429, "rate", {"Retry-After": "12"}, _io.BytesIO(b""))
+    ) == 12.0
+    assert t._retry_after_seconds(
+        HTTPError("https://x/", 500, "boom", {}, _io.BytesIO(b""))
+    ) is None
+
+
+def test_cooldown_outlasts_the_request_window(gemini):
+    """
+    The bug this fixes: the free tier has a second cap ("limit: 25") that our
+    request counting cannot see. The counter frees up after 60s, so without a
+    provider-driven cooldown we resumed hammering a still-blocked key.
+    """
+    quota = gemini._SlidingWindowQuota(3, 60.0)
+    quota.penalize(cooldown_sec=30)
+    assert quota.try_acquire() is None
+    # Age every reservation past the window; the cooldown must still hold.
+    with quota._lock:
+        quota._hits = [(at - 61, token) for at, token in quota._hits]
+    assert quota.try_acquire() is None
+
+
+def test_cooldown_is_capped(gemini):
+    """An absurd hint must not sideline a key for hours."""
+    quota = gemini._SlidingWindowQuota(3, 60.0)
+    quota.penalize(cooldown_sec=99999)
+    assert quota.cooling_down_for() <= gemini.GEMINI_MAX_COOLDOWN_SEC
+
+
+def test_a_throttled_key_is_skipped_while_cooling(gemini, tmp_path):
+    """After a 429 with a hint, later requests must not retry that key at all."""
+    from urllib.error import HTTPError
+    wav = _write_loud_wav(tmp_path)
+    throttled = HTTPError(
+        "https://x/", 429, "Please retry in 30s.", {}, io.BytesIO(b"")
+    )
+    tr = gemini.Transcriber()
+    with patch.object(gemini, "urlopen", side_effect=[throttled, _ok("t")]) as mock:
+        assert tr.transcribe_wav_sync(wav) == "t "
+    assert _keys_used(mock) == ["key-one", "key-two"]
+    # key-one is cooling down, so the next call starts at key-two.
+    with patch.object(gemini, "urlopen", side_effect=[_ok("t2")]) as mock:
+        tr.transcribe_wav_sync(wav)
+    assert _keys_used(mock) == ["key-two"]

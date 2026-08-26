@@ -4,6 +4,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import struct
@@ -123,13 +124,48 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-transcribe")
 # 300 s (~9.6 MB of 16 kHz mono WAV, ~12.8 MB encoded), so real dictation
 # stays inside the limit and this guard only catches recovery of odd files.
 GEMINI_MAX_INLINE_BYTES = 14 * 1024 * 1024
-# The free tier allows 3 requests per minute per model per project. Each key is
-# metered separately, so a burst walks down the key list instead of failing:
-# with three keys the effective ceiling is 9 dictations per minute.
+# The free tier enforces at least TWO caps under one metric name: 3 requests per
+# minute, and a second cap reported as "limit: 25" over a longer window. Counting
+# our own requests can only model the first, so a key is ALSO put on cooldown for
+# as long as the provider's own "retry in Ns" hint says. That covers any cap
+# Google enforces, including ones not mapped here.
 GEMINI_REQUESTS_PER_WINDOW = int(
     os.environ.get("OPENSPEAKSY_GEMINI_RPM", "3")
 )
 GEMINI_WINDOW_SEC = 60.0
+# Fallback cooldown when a 429 carries no parsable retry hint.
+GEMINI_DEFAULT_COOLDOWN_SEC = 40.0
+# A provider hint far beyond this is a daily/quota-level block, not a burst
+# limit; cap the cooldown so one bad reading cannot sideline a key for hours.
+GEMINI_MAX_COOLDOWN_SEC = 300.0
+# When every key is throttled, a slower transcript beats no paste at all. Voxtral
+# has no comparable per-minute ceiling. Set to an empty string to disable and let
+# the dictation fail instead (the audio still waits in .pending either way).
+GEMINI_EXHAUSTED_BACKEND = os.environ.get(
+    "OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND", "mistral"
+).strip().lower()
+
+
+def _retry_after_seconds(error):
+    """
+    Seconds the provider asked us to wait, from a Retry-After header or the
+    "Please retry in 34.5s" text Gemini puts in the 429 body. None when absent.
+    """
+    headers = getattr(error, "headers", None)
+    if headers:
+        raw = headers.get("Retry-After")
+        if raw:
+            try:
+                return max(0.0, float(raw))
+            except (TypeError, ValueError):
+                pass
+    match = re.search(r"retry in ([\d.]+)\s*s", str(error), re.IGNORECASE)
+    if match:
+        try:
+            return max(0.0, float(match.group(1)))
+        except ValueError:
+            pass
+    return None
 
 
 class _SlidingWindowQuota:
@@ -145,6 +181,8 @@ class _SlidingWindowQuota:
         # (reserved_at, token) pairs; the token makes release() precise.
         self._hits = []
         self._counter = 0
+        # Honors the provider's own retry hint, which can outlast the window.
+        self._blocked_until = 0.0
         self._lock = threading.Lock()
 
     def _prune(self, now):
@@ -162,6 +200,8 @@ class _SlidingWindowQuota:
             return None
         now = time.monotonic()
         with self._lock:
+            if now < self._blocked_until:
+                return None
             self._prune(now)
             if len(self._hits) >= self._limit:
                 return None
@@ -178,10 +218,13 @@ class _SlidingWindowQuota:
         with self._lock:
             self._hits = [hit for hit in self._hits if hit[1] != token]
 
-    def penalize(self):
+    def penalize(self, cooldown_sec=None):
         """
-        Fill the window after the provider itself reports throttling. Its idea
-        of the limit wins over ours.
+        Shut this key down after the provider itself reported throttling. Fills
+        the request window AND, when the provider said how long to wait, holds
+        the key closed for that long. The wait matters because the free tier has
+        a second cap our request counting cannot see: without it, the counter
+        frees up after 60 s and we resume hammering a key Google still refuses.
         """
         now = time.monotonic()
         with self._lock:
@@ -189,6 +232,15 @@ class _SlidingWindowQuota:
             while len(self._hits) < self._limit:
                 self._counter += 1
                 self._hits.append((now, self._counter))
+            if cooldown_sec:
+                self._blocked_until = max(
+                    self._blocked_until, now + min(cooldown_sec, GEMINI_MAX_COOLDOWN_SEC)
+                )
+
+    def cooling_down_for(self):
+        """Seconds until this key is usable again, 0.0 when it is usable now."""
+        with self._lock:
+            return max(0.0, self._blocked_until - time.monotonic())
 
 
 # One independent quota per key, in the same order as GEMINI_API_KEYS.
@@ -672,8 +724,13 @@ class Transcriber:
                 logger.warning(f"Gemini key {index + 1} unreachable: {e}")
             except TranscriptionError as e:
                 if _is_rate_limited(e):
-                    # Google's accounting disagrees with ours; trust Google's.
-                    quota.penalize()
+                    # Google's accounting disagrees with ours; trust Google's,
+                    # including how long it wants us to stay away.
+                    wait = _retry_after_seconds(e) or GEMINI_DEFAULT_COOLDOWN_SEC
+                    quota.penalize(cooldown_sec=wait)
+                    logger.info(
+                        f"Gemini key {index + 1} on cooldown for {wait:.0f}s"
+                    )
                     routine_error = routine_error or e
                 else:
                     last_error = last_error or e
@@ -683,14 +740,27 @@ class Transcriber:
                     # of spending the remaining keys' quota on the same error.
                     raise
 
+        # A real defect must surface: it needs fixing, not papering over.
         if last_error is not None:
             raise last_error
+
+        # Pure throttling, whether we predicted it or the provider told us, is
+        # exactly what the fallback exists for.
+        soonest = min(
+            (quota.cooling_down_for() for quota in _gemini_quotas), default=0.0
+        )
+        detail = f"; next one frees up in {soonest:.0f}s" if soonest else ""
+        blocked = (
+            f"all {len(GEMINI_API_KEYS)} Gemini key(s) are rate-limited{detail}"
+        )
+        if GEMINI_EXHAUSTED_BACKEND and GEMINI_EXHAUSTED_BACKEND != "gemini":
+            logger.warning(f"{blocked}; falling back to {GEMINI_EXHAUSTED_BACKEND}")
+            return self._transcribe_with(
+                GEMINI_EXHAUSTED_BACKEND, wav_path, language=language
+            )
         if routine_error is not None:
             raise routine_error
-        raise TranscriptionError(
-            f"all {skipped} Gemini key(s) are rate-limited "
-            f"({GEMINI_REQUESTS_PER_WINDOW}/{GEMINI_WINDOW_SEC:g}s each)"
-        )
+        raise TranscriptionError(blocked)
 
     def transcribe_wav_sync(self, wav_path, language=None, backend=None):
         selected_backend = backend or STT_BACKEND
