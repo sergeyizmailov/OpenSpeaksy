@@ -326,6 +326,14 @@ class _RetryableProviderResponseError(Exception):
     """A successful HTTP response whose body is incomplete or unusable."""
 
 
+class RequestRejectedError(TranscriptionError):
+    """
+    The request itself is unacceptable to the provider: malformed or too large.
+    Retrying it verbatim under a different API key produces the same failure, so
+    the key rotation stops here instead of spending every key's quota.
+    """
+
+
 def _is_connect_failure(error):
     """
     True when the request failed before reaching the provider: DNS
@@ -445,9 +453,8 @@ def _is_rate_limited(error):
     return "429" in str(error) or "too many requests" in str(error).lower()
 
 
-# A malformed or oversized request fails the same way on every key, and a
-# rejected credential says nothing about the next one only because each key is
-# checked on its own — but a 400 is about the payload, not the key.
+# A 400 or 413 is a verdict on the payload, not on the credential, so every key
+# reproduces it. Anything raised as RequestRejectedError is the same story.
 _KEY_INDEPENDENT_HTTP_CODES = (400, 413)
 
 
@@ -455,8 +462,10 @@ def _is_key_independent_failure(error):
     """
     True when retrying the identical request under a different key is pointless.
     Walking the whole list then would spend every key's quota to collect the
-    same error three times.
+    same error once per key.
     """
+    if isinstance(error, RequestRejectedError):
+        return True
     text = str(error)
     return any(f"HTTP Error {code}" in text for code in _KEY_INDEPENDENT_HTTP_CODES)
 
@@ -640,7 +649,11 @@ class Transcriber:
         if not GEMINI_API_KEYS:
             raise TranscriptionError("Gemini API key is not configured")
 
+        # Prefer a diagnostic error over a routine one when several keys fail:
+        # a 429 from the last key would otherwise hide a real defect hit on the
+        # first, since only the raised exception reaches the caller and the log.
         last_error = None
+        routine_error = None
         skipped = 0
         for index, (key, quota) in enumerate(zip(GEMINI_API_KEYS, _gemini_quotas)):
             token = quota.try_acquire()
@@ -655,13 +668,15 @@ class Transcriber:
             except ProviderUnavailableError as e:
                 # The request never reached Google, so it consumed no quota.
                 quota.release(token)
-                last_error = e
+                last_error = last_error or e
                 logger.warning(f"Gemini key {index + 1} unreachable: {e}")
             except TranscriptionError as e:
                 if _is_rate_limited(e):
                     # Google's accounting disagrees with ours; trust Google's.
                     quota.penalize()
-                last_error = e
+                    routine_error = routine_error or e
+                else:
+                    last_error = last_error or e
                 logger.warning(f"Gemini key {index + 1} failed: {e}")
                 if _is_key_independent_failure(e):
                     # The payload is the problem, not the key. Fail now instead
@@ -670,6 +685,8 @@ class Transcriber:
 
         if last_error is not None:
             raise last_error
+        if routine_error is not None:
+            raise routine_error
         raise TranscriptionError(
             f"all {skipped} Gemini key(s) are rate-limited "
             f"({GEMINI_REQUESTS_PER_WINDOW}/{GEMINI_WINDOW_SEC:g}s each)"
@@ -796,7 +813,7 @@ class Transcriber:
         with open(wav_path, "rb") as f:
             wav_data = f.read()
         if len(wav_data) > GEMINI_MAX_INLINE_BYTES:
-            raise TranscriptionError(
+            raise RequestRejectedError(
                 f"recording is too large for inline Gemini upload: "
                 f"{len(wav_data)} bytes"
             )

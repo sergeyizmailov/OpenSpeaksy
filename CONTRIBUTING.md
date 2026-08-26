@@ -55,7 +55,7 @@ input catches these without affecting genuinely distinct sentences.
 Open an issue with:
 
 - macOS version + Apple Silicon / Intel
-- STT backend and model (`mistral` / `voxtral-mini-2602` by default)
+- STT backend and model (`gemini` / `gemini-3.5-transcribe` by default)
 - Reproduction steps
 - Relevant lines from `~/Library/Logs/com.openspeaksy/main.log`
 

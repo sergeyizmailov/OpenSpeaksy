@@ -6,9 +6,10 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 ## If the user asks you to install OpenSpeaksy
 
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
-2. Make sure the user has a Mistral API key. If not, send them to
-   <https://console.mistral.ai/api-keys>. The same key powers Voxtral
-   transcription and Mistral Medium translation.
+2. Make sure the user has BOTH keys the installer needs: a Gemini API key
+   (<https://aistudio.google.com/apikey>) for all speech-to-text, and a
+   Mistral API key (<https://console.mistral.ai/api-keys>) for the two
+   translate hotkeys. Neither is optional with the shipped defaults.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
    keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
    `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
@@ -19,7 +20,8 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
    & Security. Tell them which path to authorize. Do not try to do this
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
-   see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
+   see `OpenSpeaksy starting — primary STT: Gemini gemini-3.5-transcribe`
+   followed by the key count and per-key rate limit.
 6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish.
 
 ## If the user asks you to modify or debug OpenSpeaksy

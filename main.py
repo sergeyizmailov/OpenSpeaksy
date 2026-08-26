@@ -854,6 +854,46 @@ def run_event_tap():
     CFRunLoopRun()
 
 
+PLIST_HINT = (
+    "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
+    "and reload."
+)
+
+
+def configuration_error():
+    """
+    Return a message describing the first fatal misconfiguration, or None when
+    the config is usable. Pure so the rules can be tested without booting the
+    event tap: main() only logs whatever this returns and exits.
+    """
+    if STT_BACKEND not in SUPPORTED_STT_BACKENDS:
+        return (
+            f"unsupported STT backend {STT_BACKEND!r}; expected one of "
+            f"{sorted(SUPPORTED_STT_BACKENDS)}"
+        )
+    if POLISH_STT_BACKEND not in SUPPORTED_STT_BACKENDS:
+        return (
+            f"unsupported Polish STT backend {POLISH_STT_BACKEND!r}; "
+            f"expected one of {sorted(SUPPORTED_STT_BACKENDS)}"
+        )
+    if "gemini" in {STT_BACKEND, POLISH_STT_BACKEND} and not GEMINI_API_KEYS:
+        return (
+            "no Gemini API key configured. Set GEMINI_API_KEYS (comma-"
+            f"separated) or GEMINI_API_KEY in {PLIST_HINT}"
+        )
+    if "mistral" in {STT_BACKEND, POLISH_STT_BACKEND} and not MISTRAL_API_KEY:
+        return (
+            "STT backend is Mistral but no Mistral API key is configured. "
+            f"Set MISTRAL_API_KEY in {PLIST_HINT}"
+        )
+    if not MISTRAL_API_KEY:
+        return (
+            "no Mistral API key configured; the translate hotkeys require it. "
+            f"Set MISTRAL_API_KEY in {PLIST_HINT}"
+        )
+    return None
+
+
 def main():
     # Private-by-default for logs, pending recordings, and any future files.
     os.umask(0o077)
@@ -863,34 +903,9 @@ def main():
         return
     _install_shutdown_handling()
 
-    if STT_BACKEND not in SUPPORTED_STT_BACKENDS:
-        log(
-            f"FATAL: unsupported STT backend {STT_BACKEND!r}; expected one of "
-            f"{sorted(SUPPORTED_STT_BACKENDS)}"
-        )
-        os._exit(1)
-    if POLISH_STT_BACKEND not in SUPPORTED_STT_BACKENDS:
-        log(
-            f"FATAL: unsupported Polish STT backend {POLISH_STT_BACKEND!r}; "
-            f"expected one of {sorted(SUPPORTED_STT_BACKENDS)}"
-        )
-        os._exit(1)
-
-    if "gemini" in {STT_BACKEND, POLISH_STT_BACKEND} and not GEMINI_API_KEYS:
-        log(
-            "FATAL: no Gemini API key configured. Set GEMINI_API_KEYS (comma-"
-            "separated) or GEMINI_API_KEY in "
-            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
-            "and reload."
-        )
-        os._exit(1)
-    if not MISTRAL_API_KEY:
-        log(
-            "FATAL: no Mistral API key configured; the translate hotkeys "
-            "require it. Set MISTRAL_API_KEY in "
-            "~/Library/LaunchAgents/com.openspeaksy.plist (EnvironmentVariables) "
-            "and reload."
-        )
+    fatal = configuration_error()
+    if fatal:
+        log(f"FATAL: {fatal}")
         os._exit(1)
 
     translator = f"Mistral {MISTRAL_TRANSLATION_MODEL}"

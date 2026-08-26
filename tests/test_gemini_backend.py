@@ -408,3 +408,81 @@ def test_shipped_default_backend_matches_the_plist_template(monkeypatch):
     importlib.reload(t)
     assert t.STT_BACKEND == "gemini"
     importlib.reload(t)
+
+
+def _oversized_wav(tmp_path, gemini):
+    p = tmp_path / "big.wav"
+    n = gemini.GEMINI_MAX_INLINE_BYTES + 1000
+    with open(p, "wb") as f:
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + n))
+        f.write(b"WAVEfmt ")
+        f.write(struct.pack("<IHHIIHH", 16, 1, 1, 16000, 32000, 2, 16))
+        f.write(b"data")
+        f.write(struct.pack("<I", n))
+        f.write(b"\x10\x20" * (n // 2))
+    return p
+
+
+def test_an_oversized_recording_stops_at_the_first_key(gemini, tmp_path):
+    """
+    Regression: the local size guard raised a plain TranscriptionError, whose
+    message never matched the "HTTP Error 413" text test, so an oversized file
+    walked every key and spent a slot of each. The pending-retry loop reruns
+    every 5 minutes, so one stuck file could starve live dictation of quota.
+    """
+    wav = _oversized_wav(tmp_path, gemini)
+    with patch.object(gemini, "urlopen") as mock:
+        with pytest.raises(gemini.RequestRejectedError, match="too large"):
+            gemini.Transcriber().transcribe_wav_sync(wav)
+    assert mock.call_count == 0  # never reached the network
+    assert [len(q._hits) for q in gemini._gemini_quotas] == [1, 0, 0]
+
+
+def test_request_rejected_is_a_transcription_error(gemini):
+    """Callers in main.py catch TranscriptionError; this must not escape it."""
+    assert issubclass(gemini.RequestRejectedError, gemini.TranscriptionError)
+
+
+def test_a_real_defect_is_not_masked_by_a_routine_429(gemini, tmp_path):
+    """
+    Only the raised exception reaches main.py and the overlay. When key one hits
+    a genuine failure and key two is merely throttled, the caller must see the
+    genuine one.
+    """
+    from urllib.error import HTTPError
+    wav = _write_loud_wav(tmp_path)
+    real = HTTPError("https://x/", 403, "key disabled", {}, io.BytesIO(b""))
+    throttled = HTTPError("https://x/", 429, "rate", {}, io.BytesIO(b""))
+    with patch.object(
+        gemini, "urlopen", side_effect=[real, throttled, throttled]
+    ):
+        with pytest.raises(gemini.TranscriptionError) as caught:
+            gemini.Transcriber().transcribe_wav_sync(wav)
+    assert "403" in str(caught.value)
+
+
+def test_all_keys_throttled_still_reports_throttling(gemini, tmp_path):
+    """With nothing but 429s, the 429 is the honest answer."""
+    from urllib.error import HTTPError
+    wav = _write_loud_wav(tmp_path)
+    throttled = HTTPError("https://x/", 429, "rate", {}, io.BytesIO(b""))
+    with patch.object(gemini, "urlopen", side_effect=[throttled] * 3):
+        with pytest.raises(gemini.TranscriptionError) as caught:
+            gemini.Transcriber().transcribe_wav_sync(wav)
+    assert "429" in str(caught.value)
+
+
+def test_a_bad_request_on_a_later_key_also_stops_the_rotation(gemini, tmp_path):
+    """
+    The short-circuit must hold mid-rotation, not just on the first key: key one
+    throttled, key two rejects the payload, key three must not be tried.
+    """
+    from urllib.error import HTTPError
+    wav = _write_loud_wav(tmp_path)
+    throttled = HTTPError("https://x/", 429, "rate", {}, io.BytesIO(b""))
+    bad = HTTPError("https://x/", 400, "bad", {}, io.BytesIO(b""))
+    with patch.object(gemini, "urlopen", side_effect=[throttled, bad, _ok("t")]) as mock:
+        with pytest.raises(gemini.TranscriptionError):
+            gemini.Transcriber().transcribe_wav_sync(wav)
+    assert _keys_used(mock) == ["key-one", "key-two"]

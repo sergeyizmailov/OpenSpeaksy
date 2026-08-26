@@ -3,10 +3,9 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Requires Gemini and Mistral API keys, then
-# writes them into the plist's EnvironmentVariables. Mistral Voxtral handles
-# transcription, and Mistral Medium handles translations, then
-# selectable speech-to-text fallback.
+# Requires Gemini and Mistral API keys and writes them into the plist's
+# EnvironmentVariables. Gemini 3.5 Transcribe handles all speech-to-text and
+# Mistral Medium handles the translate hotkeys.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
@@ -160,7 +159,7 @@ System Settings → Privacy & Security:
 
 Using it
 
-  Hold right Command, speak, release — dictate in a Voxtral-supported language;
+  Hold right Command, speak, release — dictate in any supported language;
   the text pastes verbatim. Hold right Option instead to dictate in Russian and
   have the English translation pasted. Hold right Shift to dictate in Russian
   and have the Polish translation pasted. The output also stays in your clipboard.

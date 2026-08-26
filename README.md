@@ -45,9 +45,10 @@ Same idea with your own API credentials: Gemini 3.5 Transcribe handles transcrip
 
 Pick the path that fits you. Both end up at the same place: a working install in about five minutes.
 
-### Prerequisites — one required API key
+### Prerequisites — two required API keys
 
-- **Mistral (required):** create a [Mistral API key](https://console.mistral.ai/api-keys) for Mistral Medium translation.
+- **Gemini (required):** create a [Gemini API key](https://aistudio.google.com/apikey) for speech-to-text. The free tier allows 3 requests per minute per project, so you can create keys in several Google projects and paste them comma-separated to raise that ceiling.
+- **Mistral (required):** create a [Mistral API key](https://console.mistral.ai/api-keys) for Mistral Medium translation on the two translate hotkeys.
 
 ### Option A — One-prompt install (recommended if you don't use Terminal)
 
@@ -157,6 +158,7 @@ The translate path (right ⌥) does Gemini transcription → Mistral translation
 | `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate into English/Polish |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
 | `GEMINI_API_KEYS` | empty | Comma-separated Gemini keys. The free per-minute quota is metered per project, so each key adds its own allowance |
+| `GEMINI_API_KEY` | empty | Single Gemini key. Appended to `GEMINI_API_KEYS`; duplicates are dropped |
 | `GEMINI_MODEL` | `gemini-3.5-transcribe` | Model used when the STT backend is `gemini` |
 | `OPENSPEAKSY_GEMINI_RPM` | `3` | Requests per minute assumed available per key; the limiter diverts to the next key before the provider rejects the call |
 | `OPENSPEAKSY_CORRECT_DICTATION` | `0` | Set to `1` for a second LLM pass that cleans up dictation; off by default because it also normalizes domain jargon into different words |
