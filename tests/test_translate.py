@@ -176,7 +176,6 @@ def test_transcribe_and_translate_happy_path(transcriber_module, tmp_path):
     # Translator must see the clean Russian (no trailing space from transcribe_wav_sync)
     assert captured_msgs["user"] == "Как дела?"
     # Final output has the trailing space matching dictate-path convention
-    # ("How are you?" is below REFINE_MIN_CHARS so refinement is skipped)
     assert result == "How are you? "
 
 
@@ -200,51 +199,45 @@ def test_translate_sets_russian_while_dictate_keeps_auto_detection(transcriber_m
     assert b'name="language"' not in captured_bodies[1]
 
 
-def test_refinement_runs_for_long_translations(transcriber_module, tmp_path):
-    """Translations >= REFINE_MIN_CHARS get a second LLM pass to polish phrasing."""
+def test_translate_makes_exactly_one_llm_call(transcriber_module, tmp_path):
+    """
+    The polishing pass was removed: a long translation must still cost one
+    STT call plus one translate call, never a third round-trip.
+    """
     t = transcriber_module
     wav = _write_silent_wav(tmp_path)
-    chat_payloads = []
-    long_first_pass = "I was just thinking that maybe we could meet up tomorrow afternoon."
-    assert len(long_first_pass) >= t.REFINE_MIN_CHARS
+    long_enough = (
+        "We need to rewrite the key rotation because it keeps failing with 429 "
+        "errors, and the current retry budget is nowhere near enough."
+    )
 
     def fake_urlopen(req, timeout):
         if "audio/transcriptions" in req.full_url:
-            return _ok_transcribe("Я подумал, может встретимся завтра днём.")
-        body = json.loads(req.data.decode())
-        chat_payloads.append(body)
-        # First call = translate, second = refine
-        if len(chat_payloads) == 1:
-            return _ok_chat(long_first_pass)
-        return _ok_chat("I was thinking — maybe we could meet up tomorrow afternoon?")
+            return _ok_transcribe("Надо переписать ротацию ключей, потому что падает 429.")
+        return _ok_chat(long_enough)
 
-    with patch.object(t, "urlopen", side_effect=fake_urlopen):
+    with patch.object(t, "urlopen", side_effect=fake_urlopen) as mock:
         result = t.Transcriber().transcribe_and_translate_sync(wav)
 
-    assert len(chat_payloads) == 2, "refinement must trigger for long translations"
-    # Refinement receives the first-pass English, not the Russian
-    assert chat_payloads[1]["messages"][1]["content"] == long_first_pass
-    assert "editor" in chat_payloads[1]["messages"][0]["content"].lower()
-    assert result == "I was thinking — maybe we could meet up tomorrow afternoon? "
+    assert result == long_enough + " "
+    assert mock.call_count == 2
 
 
-def test_refinement_failure_falls_back_to_first_pass(transcriber_module, tmp_path):
-    """If the refinement call errors, the first-pass translation is still returned —
-    a stiff translation is better than no translation."""
+def test_polish_makes_exactly_one_llm_call(transcriber_module, tmp_path):
     t = transcriber_module
     wav = _write_silent_wav(tmp_path)
-    chat_count = {"n": 0}
-    long_first_pass = "I was just thinking that maybe we could meet up tomorrow afternoon."
+    long_enough = (
+        "Trzeba przerobić rotację kluczy, bo ciągle rzuca błąd 429 i obecny "
+        "limit prób jest zdecydowanie za mały."
+    )
 
     def fake_urlopen(req, timeout):
         if "audio/transcriptions" in req.full_url:
-            return _ok_transcribe("Я подумал, может встретимся завтра днём.")
-        chat_count["n"] += 1
-        if chat_count["n"] == 1:
-            return _ok_chat(long_first_pass)
-        raise _http_error(500)  # refinement fails
+            return _ok_transcribe("Надо переписать ротацию ключей.")
+        return _ok_chat(long_enough)
 
-    with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        result = t.Transcriber().transcribe_and_translate_sync(wav)
+    with patch.object(t, "urlopen", side_effect=fake_urlopen) as mock:
+        result = t.Transcriber().transcribe_to_polish_sync(wav)
 
-    assert result == long_first_pass + " "
+    assert result == long_enough + " "
+    assert mock.call_count == 2

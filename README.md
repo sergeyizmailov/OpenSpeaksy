@@ -47,7 +47,7 @@ Pick the path that fits you. Both end up at the same place: a working install in
 
 ### Prerequisites — one required API key
 
-- **Mistral (required):** create a [Mistral API key](https://console.mistral.ai/api-keys) for Voxtral transcription and Mistral Medium translation.
+- **Mistral (required):** create a [Mistral API key](https://console.mistral.ai/api-keys) for Mistral Medium translation.
 
 ### Option A — One-prompt install (recommended if you don't use Terminal)
 
@@ -101,7 +101,7 @@ You should see `OpenSpeaksy running — hold right Command (dictate), right Opti
 
 Three hotkeys:
 
-- **Right ⌘** — dictate in a Voxtral-supported language; the text pastes verbatim.
+- **Right ⌘** — dictate in any language Gemini Transcribe supports; the text pastes verbatim.
 - **Right ⌥ (Option)** — dictate Russian, paste English. Gemini transcribes in Russian, then Mistral Medium translates it before pasting.
 - **Right ⇧ (Shift)** — dictate Russian, paste Polish. Gemini transcribes with `language="ru"`, then Mistral Medium translates the result into Polish.
 
@@ -146,7 +146,7 @@ After editing, restart: `launchctl stop com.openspeaksy` (KeepAlive auto-restart
 
 ### Tune providers and translate quality
 
-The translate path (right ⌥) does Voxtral transcription → LLM translation → second LLM pass to polish phrasing on longer outputs. Environment variables in `~/Library/LaunchAgents/com.openspeaksy.plist` tune it without touching code:
+The translate path (right ⌥) does Gemini transcription → Mistral translation, one LLM call each. Environment variables in `~/Library/LaunchAgents/com.openspeaksy.plist` tune it without touching code:
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -154,7 +154,7 @@ The translate path (right ⌥) does Voxtral transcription → LLM translation �
 | `OPENSPEAKSY_DICTATE_LANGUAGE` | empty | Language hint for right Command; empty means auto-detect, `ru` forces Russian |
 | `OPENSPEAKSY_POLISH_STT_BACKEND` | inherits `OPENSPEAKSY_STT_BACKEND` | STT provider used only by right Shift; the language hint is always Russian |
 | `MISTRAL_MODEL` | `voxtral-mini-2602` | Primary speech-to-text model |
-| `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate and refine English/Polish output |
+| `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate into English/Polish |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
 | `GEMINI_API_KEYS` | empty | Comma-separated Gemini keys. The free per-minute quota is metered per project, so each key adds its own allowance |
 | `GEMINI_MODEL` | `gemini-3.5-transcribe` | Model used when the STT backend is `gemini` |
@@ -196,15 +196,15 @@ launchctl load   ~/Library/LaunchAgents/com.openspeaksy.plist
 
 ## How it works
 
-A single LaunchAgent (`com.openspeaksy`) runs `main.py`. A process lock prevents a manual second launch from registering duplicate hotkeys or pasting twice. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to Mistral Voxtral, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
+A single LaunchAgent (`com.openspeaksy`) runs `main.py`. A process lock prevents a manual second launch from registering duplicate hotkeys or pasting twice. It captures audio with PortAudio, watches for the hotkey via CGEventTap, persists each recording atomically to `.pending/`, POSTs the WAV to Gemini Transcribe, then writes the response to the clipboard and synthesizes ⌘V into the focused app.
 
-Dictate mode (right ⌘) pastes the Voxtral transcript as-is. An optional cleanup pass is available but **off by default** (`OPENSPEAKSY_CORRECT_DICTATION=1` enables it): for transcripts of 40+ characters it sends the text to `mistral-medium-3-5`. Fast recognition is lossy: it mishears words, swallows endings, drops short words, and cuts phrases off mid-thought, so sentences read as broken even when the speaker was clear. The pass infers the subject matter of the text and uses it to repair misheard words and mangled product names, restore what was dropped, finish cut-off phrases, split run-on speech into sentences, and reword phrasing that is barely grammatical — while keeping the speaker's own wording, tone, and register, and never adding facts the speaker did not say.
+Dictate mode (right ⌘) pastes the transcript as-is. An optional cleanup pass is available but **off by default** (`OPENSPEAKSY_CORRECT_DICTATION=1` enables it): for transcripts of 40+ characters it sends the text to `mistral-medium-3-5`. Fast recognition is lossy: it mishears words, swallows endings, drops short words, and cuts phrases off mid-thought, so sentences read as broken even when the speaker was clear. The pass infers the subject matter of the text and uses it to repair misheard words and mangled product names, restore what was dropped, finish cut-off phrases, split run-on speech into sentences, and reword phrasing that is barely grammatical — while keeping the speaker's own wording, tone, and register, and never adding facts the speaker did not say.
 
 The result is accepted only if it still looks like a cleanup of the original: markdown and wrapping quotes are stripped, growth beyond 60% is discarded as an answer rather than an edit, and shrinkage beyond 50% as a summary. Both bounds are loose on purpose — collapsing spelled-out numbers into digits and tightening rambling speech are wanted, so the guard only catches a model that stopped editing and started writing its own text. Any failure or rejection pastes the raw transcript, so the pass can never cost you a recording. It adds roughly 0.5 s on a short phrase and 20 s on a 13-minute recording, since its cost tracks transcript length rather than audio length.
 
-Translate mode (right ⌥) asks Voxtral for Russian (`language="ru"`), then `mistral-medium-3-5` translates the Russian to English. For outputs of 40+ characters, a second Mistral call polishes awkward phrasing; if it errors, the first-pass translation is kept.
+Translate mode (right ⌥) asks Gemini for Russian (`language="ru"`), then `mistral-medium-3-5` translates the Russian to English. One LLM call, no second polishing pass: the translation prompt already targets natural, human phrasing.
 
-Polish mode (right ⇧) mirrors translate mode: it requests Russian transcription (`language="ru"`), then asks Mistral Medium for a Polish translation and optionally refines longer output. `OPENSPEAKSY_POLISH_STT_BACKEND` can select a different STT provider without changing that Russian-only contract.
+Polish mode (right ⇧) mirrors translate mode: it requests Russian transcription (`language="ru"`), then asks Mistral Medium for a Polish translation. `OPENSPEAKSY_POLISH_STT_BACKEND` can select a different STT provider without changing that Russian-only contract.
 
 A separate watchdog thread auto-recovers stuck states. Per-job generation tokens prevent any stale worker from ever pasting old text into your current app — even if a watchdog reset and a new recording happen in between. The pending filename encodes the selected mode, so recovery after a crash preserves intent. If `.pending/` cannot be written, OpenSpeaksy atomically saves to a private fallback directory under `~/Library/Application Support/OpenSpeaksy/pending/`. If a provider is unreachable, the audio remains queued; the next startup transcribes it and writes the combined result to the clipboard (it never auto-pastes — focus at login is unrelated to the dictation context).
 

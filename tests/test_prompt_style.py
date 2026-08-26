@@ -10,9 +10,7 @@ import transcriber as t
 
 PROMPTS = [
     "TRANSLATION_SYSTEM_PROMPT",
-    "REFINEMENT_SYSTEM_PROMPT",
     "POLISH_SYSTEM_PROMPT",
-    "POLISH_REFINEMENT_SYSTEM_PROMPT",
 ]
 
 
@@ -37,7 +35,7 @@ def test_prompt_does_not_itself_use_the_dashes_it_bans(name):
     assert offenders == []
 
 
-@pytest.mark.parametrize("name", ["TRANSLATION_SYSTEM_PROMPT", "POLISH_SYSTEM_PROMPT"])
+@pytest.mark.parametrize("name", PROMPTS)
 def test_few_shot_examples_are_dash_free(name):
     """The examples are the strongest signal; none may model a dash."""
     prompt = getattr(t, name)

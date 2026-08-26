@@ -50,8 +50,8 @@ Conventions in this codebase:
   `transcribe_and_correct_sync` (selected STT backend → optional correction pass
   for transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
   right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Gemini RU → Mistral translate → optional
-  refine pass for outputs ≥ `REFINE_MIN_CHARS`); right Shift (`MODE_POLISH`)
+  `transcribe_and_translate_sync` (Gemini RU → Mistral translate);
+  right Shift (`MODE_POLISH`)
   mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The
   mode is captured under `state_lock` in `_begin_recording` and consumed by
   `begin_processing`; it is also encoded in the pending filename

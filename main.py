@@ -78,9 +78,9 @@ QUARANTINE_DIR = PENDING_DIR / "quarantine"
 # CGEventSourceKeyState for modifier ownership here: macOS can report a held
 # right-side modifier as released, which would cut off valid dictation.
 RECORDING_TIMEOUT_SEC = 3600
-# Translation can make up to three provider calls (STT, translate, refine),
-# each with bounded retries. Keep the watchdog above that legitimate retry
-# budget so it never invalidates a worker that is still making progress.
+# Translation makes two provider calls (STT, translate), each with bounded
+# retries, and STT may walk several Gemini keys. Keep the watchdog above that
+# legitimate retry budget so it never invalidates a worker still making progress.
 PROCESSING_TIMEOUT_SEC = 360
 WATCHDOG_POLL_SEC = 5
 
