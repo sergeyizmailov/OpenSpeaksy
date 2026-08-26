@@ -113,7 +113,7 @@ A small dark pill appears near the bottom of the screen. All hotkeys share the s
 - **Pill, no label** — dictate (right ⌘)
 - **Pill with "English" label** — Russian-to-English translation (right ⌥)
 - **Pill with "Polish" label** — Russian-to-Polish translation (right ⇧)
-- **Animated bars** while recording, **spinner** while transcribing (or translating), **coral `!`** if a provider returns an error
+- **Animated bars** while recording, **spinner** while transcribing (or translating), and a **message** if something fails — the pill widens and wraps to fit the text, and stays up long enough to read it. When a provider reports how long to wait, that is what it says ("Rate limited, try again in 39s")
 
 Recordings shorter than 0.8 seconds are skipped. Common speech-model
 hallucinations ("Subscribe", "Спасибо за просмотр", etc.) are filtered out

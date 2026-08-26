@@ -15,8 +15,9 @@ class _Overlay:
     def show(self, mode, label=None):
         self.events.append((mode, label))
 
-    def flash_error(self):
-        self.events.append(("error", None))
+    def flash_error(self, message=None, duration=None):
+        # Record the message so tests can assert what the user actually sees.
+        self.events.append(("error", message))
 
 
 def _recording_state(monkeypatch):
@@ -108,7 +109,7 @@ def test_worker_start_failure_keeps_saved_wav(monkeypatch, tmp_path):
     main.on_key_up(main.HOTKEY_KEYCODE)
 
     assert main.state == "idle"
-    assert ("error", None) in overlay.events
+    assert ("error", "Could not start transcription") in overlay.events
 
 
 def test_recorder_start_failure_flashes_error(monkeypatch):
@@ -129,7 +130,7 @@ def test_recorder_start_failure_flashes_error(monkeypatch):
 
     assert main.state == "idle"
     assert main.current_hotkey is None
-    assert ("error", None) in overlay.events
+    assert ("error", "Could not start recording") in overlay.events
 
 
 def test_denied_microphone_is_rejected_before_recorder_start(monkeypatch):
@@ -151,7 +152,7 @@ def test_denied_microphone_is_rejected_before_recorder_start(monkeypatch):
 
     assert starts == []
     assert main.state == "idle"
-    assert ("error", None) in overlay.events
+    assert ("error", "Microphone access is blocked in System Settings") in overlay.events
 
 
 def test_primary_save_failure_uses_fallback(monkeypatch, tmp_path):
@@ -195,4 +196,4 @@ def test_both_save_locations_failing_flashes_error(monkeypatch):
     main.on_key_up(main.HOTKEY_KEYCODE)
 
     assert main.state == "idle"
-    assert ("error", None) in overlay.events
+    assert ("error", "Could not save the recording") in overlay.events

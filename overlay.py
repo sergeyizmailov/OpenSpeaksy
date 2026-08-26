@@ -4,14 +4,18 @@ import objc
 from AppKit import (
     NSView, NSPanel, NSColor, NSBezierPath, NSScreen, NSFont,
     NSFontAttributeName, NSForegroundColorAttributeName, NSKernAttributeName,
-    NSFontWeightLight, NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
+    NSFontWeightLight, NSFontWeightRegular,
+    NSFontDescriptorSystemDesignRounded, NSLineCapStyleRound,
+    NSMutableParagraphStyle, NSParagraphStyleAttributeName,
+    NSLineBreakByWordWrapping, NSTextAlignmentCenter,
+    NSStringDrawingUsesLineFragmentOrigin,
     NSWindowStyleMaskBorderless, NSBackingStoreBuffered,
     NSWindowCollectionBehaviorCanJoinAllSpaces,
     NSWindowCollectionBehaviorStationary,
     NSAnimationContext,
     NSInsetRect, NSViewLayerContentsRedrawDuringViewResize,
 )
-from Foundation import NSMakeRect, NSMakePoint, NSAttributedString, NSTimer
+from Foundation import NSMakeRect, NSMakePoint, NSMakeSize, NSAttributedString, NSTimer
 from Quartz import CAMediaTimingFunction
 from PyObjCTools import AppHelper
 
@@ -21,8 +25,30 @@ LABEL_PAD = 18  # extra top margin for the mode label
 MARGIN = 145
 FPS = 1.0 / 60.0
 
-PANEL_W = W + 2 * PAD
-PANEL_H = H + PAD + LABEL_PAD
+# An error pill carries a sentence, so it grows past the glyph-sized W. The
+# panel is built once at the widest size any state can need and never resized;
+# only the pill inside it animates, which keeps the window position stable.
+ERROR_TEXT_SIZE = 11.5
+ERROR_TEXT_PAD_X = 14      # breathing room inside the pill, per side
+ERROR_MAX_W = 420          # wrap beyond this; keeps the pill off screen edges
+ERROR_LINE_GAP = 3.0
+ERROR_MIN_H = H
+ERROR_MAX_CHARS = 220      # Beyond this it stops being a glanceable notice
+ERROR_FLASH_SEC = 1.2      # Bare "!" flash, and the floor for a message
+ERROR_CHARS_PER_SEC = 22.0 # Rough comfortable reading pace
+ERROR_MESSAGE_MAX_SEC = 6.0
+
+# The panel must fit the TALLEST state, not the common one: a wrapped error
+# message is several lines high, and a panel sized for the glyph would clip it.
+# ERROR_MAX_CHARS at ERROR_MAX_W wraps to at most ERROR_MAX_LINES.
+ERROR_MAX_LINES = 4
+ERROR_PILL_MAX_H = (
+    math.ceil(ERROR_TEXT_SIZE * 1.25) * ERROR_MAX_LINES
+    + ERROR_LINE_GAP * (ERROR_MAX_LINES - 1)
+    + 16
+)
+PANEL_W = ERROR_MAX_W + 2 * PAD
+PANEL_H = max(H + PAD + LABEL_PAD, math.ceil(ERROR_PILL_MAX_H) + 2 * PAD)
 
 # Animation durations (seconds). Calm ease, no overshoot.
 EXPAND_IN = 0.32
@@ -45,16 +71,21 @@ LABEL_SIZE = 9.5
 LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
 LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # Mode label — medium gray
 
+# Error message type — same rounded family as the mode label, sized to read at
+# a glance without dominating the screen.
+ERROR_TEXT_RGBA = (1.0, 1.0, 1.0, 0.92)
+
 FILL = None
 EDGE = None
 BAR_COLOR = None           # Recording bars / loading arc
 ERROR_BAR = None           # Error "!"
 LABEL_ATTRS = None
+ERROR_ATTRS = None
 CLEAR = None
 
 
 def _init_colors():
-    global FILL, EDGE, BAR_COLOR, ERROR_BAR, LABEL_ATTRS, CLEAR, _EASE
+    global FILL, EDGE, BAR_COLOR, ERROR_BAR, LABEL_ATTRS, ERROR_ATTRS, CLEAR, _EASE
     if BAR_COLOR is None:
         c = NSColor.colorWithRed_green_blue_alpha_
 
@@ -66,6 +97,22 @@ def _init_colors():
         base = NSFont.systemFontOfSize_weight_(LABEL_SIZE, NSFontWeightLight)
         rounded = base.fontDescriptor().fontDescriptorWithDesign_(NSFontDescriptorSystemDesignRounded)
         label_font = NSFont.fontWithDescriptor_size_(rounded, LABEL_SIZE) or base
+        err_base = NSFont.systemFontOfSize_weight_(
+            ERROR_TEXT_SIZE, NSFontWeightRegular
+        )
+        err_rounded = err_base.fontDescriptor().fontDescriptorWithDesign_(
+            NSFontDescriptorSystemDesignRounded
+        )
+        err_font = NSFont.fontWithDescriptor_size_(err_rounded, ERROR_TEXT_SIZE) or err_base
+        wrap = NSMutableParagraphStyle.alloc().init()
+        wrap.setLineBreakMode_(NSLineBreakByWordWrapping)
+        wrap.setAlignment_(NSTextAlignmentCenter)
+        wrap.setLineSpacing_(ERROR_LINE_GAP)
+        ERROR_ATTRS = {
+            NSFontAttributeName: err_font,
+            NSForegroundColorAttributeName: c(*ERROR_TEXT_RGBA),
+            NSParagraphStyleAttributeName: wrap,
+        }
         LABEL_ATTRS = {
             NSFontAttributeName: label_font,
             NSForegroundColorAttributeName: c(*LABEL_RGBA),
@@ -76,12 +123,56 @@ def _init_colors():
         _EASE = CAMediaTimingFunction.functionWithControlPoints____(0.4, 0.0, 0.2, 1.0)
 
 
+def _clean_message(message):
+    """
+    Collapse a raw provider error into one tidy line of prose. Log strings are
+    written for logs, not for a pill floating over the user's work.
+    """
+    if not message:
+        return None
+    text = " ".join(str(message).split())
+    if not text:
+        return None
+    if len(text) > ERROR_MAX_CHARS:
+        text = text[: ERROR_MAX_CHARS - 1].rstrip(" ,.;:") + "…"
+    return text
+
+
+def _read_time(message):
+    """Keep the pill up long enough to actually read it, within bounds."""
+    seconds = ERROR_FLASH_SEC + len(message) / ERROR_CHARS_PER_SEC
+    return max(ERROR_FLASH_SEC, min(seconds, ERROR_MESSAGE_MAX_SEC))
+
+
+def _measure_error(message):
+    """
+    Text box size for an error message, wrapped at ERROR_MAX_W. Returns
+    (text_w, text_h) in points; the caller pads it into a pill.
+    """
+    body = NSAttributedString.alloc().initWithString_attributes_(message, ERROR_ATTRS)
+    limit = NSMakeSize(ERROR_MAX_W - 2 * ERROR_TEXT_PAD_X, 10000)
+    # usesLineFragmentOrigin is required for multi-line measurement; without it
+    # AppKit reports a single line's height no matter how the text wraps.
+    box = body.boundingRectWithSize_options_(limit, NSStringDrawingUsesLineFragmentOrigin)
+    return math.ceil(box.size.width), math.ceil(box.size.height)
+
+
+def _error_frame(message):
+    """Pill frame sized to hold `message`, centered in the fixed-width panel."""
+    tw, th = _measure_error(message)
+    w = min(ERROR_MAX_W, tw + 2 * ERROR_TEXT_PAD_X)
+    # Clamped to the panel: a taller pill would draw its text outside the
+    # window, where it is simply invisible.
+    h = max(ERROR_MIN_H, min(th + 16, PANEL_H - 2 * PAD))
+    return NSMakeRect((PANEL_W - w) / 2.0, PAD, w, h)
+
+
 def _full_frame():
-    return NSMakeRect(PAD, PAD, W, H)
+    return NSMakeRect((PANEL_W - W) / 2.0, PAD, W, H)
 
 
 def _circle_frame():
-    return NSMakeRect(PAD + (W - H) / 2.0, PAD, H, H)
+    return NSMakeRect((PANEL_W - H) / 2.0, PAD, H, H)
 
 
 class PillView(NSView):
@@ -125,6 +216,7 @@ class OverlayView(NSView):
         if self is not None:
             self._mode = None
             self._label = None
+            self._message = None
             self._phase = 0.0
             _init_colors()
             self.setWantsLayer_(True)
@@ -160,6 +252,21 @@ class OverlayView(NSView):
         if self._label != label:
             self._label = label
             self._glyph.setNeedsDisplay_(True)
+
+    def setMessage_(self, message):
+        if self._message != message:
+            self._message = message
+            self._glyph.setNeedsDisplay_(True)
+
+    def expandToMessage_(self, message):
+        """Grow the pill to fit an error message instead of the glyph size."""
+        NSAnimationContext.beginGrouping()
+        ctx = NSAnimationContext.currentContext()
+        ctx.setDuration_(EXPAND_IN)
+        ctx.setTimingFunction_(_EASE)
+        ctx.setAllowsImplicitAnimation_(True)
+        self._surface.animator().setFrame_(_error_frame(message))
+        NSAnimationContext.endGrouping()
 
     def expand(self):
         # Calm ease, no overshoot — the pill settles statically.
@@ -199,17 +306,33 @@ class OverlayView(NSView):
             y = PAD + H + (LABEL_PAD - sz.height) / 2.0
             s.drawAtPoint_(NSMakePoint(x, y))
 
-        cx, cy = PAD + W / 2.0, PAD + H / 2.0
+        cx, cy = PANEL_W / 2.0, PAD + H / 2.0
 
         if self._mode == "error":
-            # "!" — vertical bar + dot
-            ERROR_BAR.setFill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(cx - 1, cy - 4, 2, 10), 1, 1
-            ).fill()
-            NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
-                NSMakeRect(cx - 1, cy - 8, 2, 2), 1, 1
-            ).fill()
+            if self._message:
+                # Center the wrapped text on the pill the surface animated to,
+                # so text and pill can never disagree about where they are.
+                pill = self._surface.frame()
+                tw, th = _measure_error(self._message)
+                body = NSAttributedString.alloc().initWithString_attributes_(
+                    self._message, ERROR_ATTRS
+                )
+                box = NSMakeRect(
+                    pill.origin.x + (pill.size.width - tw) / 2.0,
+                    pill.origin.y + (pill.size.height - th) / 2.0,
+                    tw,
+                    th,
+                )
+                body.drawWithRect_options_(box, NSStringDrawingUsesLineFragmentOrigin)
+            else:
+                # "!" — vertical bar + dot
+                ERROR_BAR.setFill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(cx - 1, cy - 4, 2, 10), 1, 1
+                ).fill()
+                NSBezierPath.bezierPathWithRoundedRect_xRadius_yRadius_(
+                    NSMakeRect(cx - 1, cy - 8, 2, 2), 1, 1
+                ).fill()
 
         elif self._mode == "recording":
             # Center-weighted envelope reads like a real voice meter.
@@ -250,16 +373,23 @@ class Overlay:
         self._gen = 0
 
     def show(self, mode, label=None):
-        AppHelper.callAfter(self._show, mode, label)
+        AppHelper.callAfter(self._show, mode, label, None)
 
-    def flash_error(self, duration=1.2):
-        AppHelper.callAfter(self._flash_error, duration)
+    def flash_error(self, message=None, duration=None):
+        """
+        Show the error pill. With a message the pill widens to fit it and stays
+        up long enough to read; without one it is the old compact "!" flash.
+        """
+        message = _clean_message(message)
+        if duration is None:
+            duration = _read_time(message) if message else ERROR_FLASH_SEC
+        AppHelper.callAfter(self._flash_error, message, duration)
 
     def hide(self):
         AppHelper.callAfter(self._hide)
 
-    def _flash_error(self, duration):
-        self._show("error", None)
+    def _flash_error(self, message, duration):
+        self._show("error", None, message)
         gen = self._gen
         threading.Timer(
             duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)
@@ -270,20 +400,26 @@ class Overlay:
             self._hide()
 
     def _center(self):
-        # Bottom-left of the pill on screen (the panel is inset around it).
+        # Bottom-left of the glyph-sized pill on screen. The panel is a fixed
+        # wide box centered on the same point, so a wider error pill grows
+        # symmetrically without moving the window.
         sf = NSScreen.mainScreen().frame()
         x = sf.origin.x + (sf.size.width - W) / 2
         y = sf.origin.y + MARGIN - H
         return x, y
+
+    def _panel_origin(self):
+        x, y = self._center()
+        return NSMakePoint(x - (PANEL_W - W) / 2.0, y - PAD)
 
     def _ensure_panel(self):
         # Build the panel once and keep it alive (hidden at alpha 0) between
         # cycles — no per-cycle teardown/recreate.
         if self._panel is not None:
             return
-        x, y = self._center()
+        origin = self._panel_origin()
         panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(x - PAD, y - PAD, PANEL_W, PANEL_H),
+            NSMakeRect(origin.x, origin.y, PANEL_W, PANEL_H),
             NSWindowStyleMaskBorderless,
             NSBackingStoreBuffered,
             False,
@@ -308,15 +444,15 @@ class Overlay:
         self._panel = panel
         self._view = view
 
-    def _show(self, mode, label):
+    def _show(self, mode, label, message=None):
         _init_colors()
         self._ensure_panel()
         self._hiding = False
         self._gen += 1
 
-        x, y = self._center()
-        self._panel.setFrameOrigin_(NSMakePoint(x - PAD, y - PAD))
+        self._panel.setFrameOrigin_(self._panel_origin())
         self._view.setLabel_(label)
+        self._view.setMessage_(message)
         self._view.setMode_(mode)
 
         # The redraw timer runs only while the pill is visible.
@@ -332,7 +468,10 @@ class Overlay:
         self._panel.animator().setAlphaValue_(1.0)
         NSAnimationContext.endGrouping()
 
-        self._view.expand()
+        if message:
+            self._view.expandToMessage_(message)
+        else:
+            self._view.expand()
 
     def _hide(self):
         if not self._panel or self._hiding:

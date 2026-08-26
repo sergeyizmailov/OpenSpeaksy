@@ -65,7 +65,11 @@ Conventions in this codebase:
   provider; right Shift still forces Russian before the Mistral Polish translation.
 - **Overlay labels reflect intent**: call `Overlay.show(mode, label=...)` with
   the value from `MODE_LABELS`. All modes share the same flat dark pill;
-  translate modes add `English` or `Polish` above it. Errors show a coral `!`.
+  translate modes add `English` or `Polish` above it. Errors show a message
+  inside the pill, which resizes to the text (`_error_frame` measures it,
+  wrapping at `ERROR_MAX_W`); `overlay.flash_error(message)` takes the text and
+  `main.error_notice()` turns a raw provider error into it. Passing no message
+  falls back to the old coral `!`.
 - **Watchdog runs in its own thread** (`watchdog_loop`). State mutation and
   recorder/overlay cleanup stay under `state_lock` so a new recording cannot
   start between reset and cleanup. Overlay calls marshal asynchronously to the

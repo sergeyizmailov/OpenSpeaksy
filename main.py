@@ -1,6 +1,7 @@
 import fcntl
 import logging
 import os
+import re
 import signal
 import time
 import threading
@@ -354,7 +355,7 @@ def _watchdog_tick():
             current_mode = None
             # Surface the failure instead of silently dropping the spinner;
             # the background retry loop will re-transcribe the preserved WAV.
-            overlay.flash_error()
+            overlay.flash_error("Transcription timed out, saved for retry")
             current_wav_path = None
 
     if finish_keycode is not None:
@@ -525,6 +526,37 @@ def is_valid_wav(path):
         return False
 
 
+def error_notice(error):
+    """
+    A short, human notice for the overlay pill. Provider errors are written for
+    logs ("HTTP Error 429: Too Many Requests"), which says nothing useful to
+    someone who just spoke into their laptop. Where the provider told us how
+    long to wait, that number is the single most useful thing to show.
+    """
+    text = str(error).strip()
+    if not text:
+        return "Transcription failed"
+
+    wait = re.search(r"(?:frees up in|retry in)\s*([\d.]+)\s*s", text, re.IGNORECASE)
+    if wait:
+        seconds = int(float(wait.group(1)) + 0.5)
+        return f"Rate limited, try again in {seconds}s"
+    if "rate-limited" in text.lower() or "429" in text:
+        return "Rate limited, try again shortly"
+    if isinstance(error, ProviderUnavailableError):
+        return "No connection to the transcription service"
+    if "too large" in text.lower():
+        return "Recording is too long to transcribe"
+    if "api key" in text.lower():
+        return "API key is missing or rejected"
+    if "microphone" in text.lower():
+        return "Microphone access is blocked in System Settings"
+
+    # Unrecognized: show the provider's own words rather than swallowing them.
+    # The overlay collapses whitespace and truncates, so a long one is safe.
+    return text
+
+
 def process_pending_recording(path, job_id, mode):
     """
     Live worker spawned by on_key_up. job_id is the generation token captured
@@ -533,7 +565,7 @@ def process_pending_recording(path, job_id, mode):
     around the clipboard.
     """
     text = None
-    error = False
+    notice = None
     try:
         if mode == MODE_TRANSLATE:
             text = transcriber.transcribe_and_translate_sync(path)
@@ -543,10 +575,10 @@ def process_pending_recording(path, job_id, mode):
             text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
-        error = True
+        notice = error_notice(e)
     except Exception as e:
         log(f"processing error {path.name}: {e}")
-        error = True
+        notice = error_notice(e)
 
     # Claim ownership of THIS job — exact job_id match. A bare state check
     # would also accept a *newer* job's "processing" state and let a stale
@@ -559,8 +591,8 @@ def process_pending_recording(path, job_id, mode):
             log(f"stale worker abandoned: {path.name}")
             return
 
-        if error:
-            overlay.flash_error()
+        if notice:
+            overlay.flash_error(notice)
             return  # keep file for retry
 
         if text:
@@ -568,7 +600,7 @@ def process_pending_recording(path, job_id, mode):
                 log(f"pasted {len(text)} chars from {path.name}")
                 overlay.hide()
             else:
-                overlay.flash_error()
+                overlay.flash_error("Could not paste into this app")
                 return  # keep file
         else:
             log(f"no speech detected in {path.name}")
@@ -723,7 +755,7 @@ def on_key_down(keycode, mode):
             "recording blocked: Microphone permission is denied or restricted"
         )
         _abandon_recording_cycle()
-        overlay.flash_error()
+        overlay.flash_error("Microphone access is blocked in System Settings")
         return
     try:
         recorder.start()
@@ -732,7 +764,7 @@ def on_key_down(keycode, mode):
     except Exception as e:
         log(f"recorder.start error: {e}")
         _abandon_recording_cycle()
-        overlay.flash_error()
+        overlay.flash_error("Could not start recording")
 
 
 def on_key_up(keycode):
@@ -755,7 +787,7 @@ def on_key_up(keycode):
     except Exception as e:
         log(f"recorder.stop error: {e}")
         if _claim_job_completion(job_id):
-            overlay.flash_error()
+            overlay.flash_error("Recording failed")
         return
 
     if len(audio) < MIN_AUDIO_SAMPLES:
@@ -772,7 +804,7 @@ def on_key_up(keycode):
     except Exception as e:
         log(f"save pending recording error: {e}")
         if _claim_job_completion(job_id):
-            overlay.flash_error()
+            overlay.flash_error("Could not save the recording")
         return
 
     overlay.show("loading", label=MODE_LABELS.get(mode))
@@ -788,7 +820,7 @@ def on_key_up(keycode):
         log(f"processing worker start error {wav_path.name}: {e}")
         current_wav_path = None
         if _claim_job_completion(job_id):
-            overlay.flash_error()
+            overlay.flash_error("Could not start transcription")
 
 
 def tap_callback(proxy, event_type, event, refcon):
