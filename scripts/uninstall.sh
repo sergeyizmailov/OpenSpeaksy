@@ -29,6 +29,11 @@ intact. Remove them manually if you no longer need them:
 
     rm -rf "$(cd "$(dirname "$0")/.." && pwd)"
 
+Recordings that could not be saved to the project directory were written to a
+fallback queue. It holds audio, so remove it too if you are done:
+
+    rm -rf "$HOME/Library/Application Support/OpenSpeaksy"
+
 You may also want to revoke Input Monitoring / Accessibility permissions in
 System Settings → Privacy & Security.
 EOF

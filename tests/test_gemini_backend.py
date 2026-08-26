@@ -154,6 +154,26 @@ def test_completed_response_with_no_steps_is_silence_not_a_failure(gemini, tmp_p
     assert mock.call_count == 1
 
 
+def test_no_steps_on_LOUD_audio_is_also_one_request_not_nine(gemini, tmp_path):
+    """
+    The blind spot in the test above: it used a silent WAV, so the RMS guard
+    never fired. On audible audio the same empty response used to raise a
+    retryable error — three attempts on the key, then a walk through every
+    other key: nine free-tier requests to be told the same thing. A completed
+    interaction with no steps is the model's verdict on the audio, so it must
+    short-circuit regardless of how loud the recording is.
+    """
+    class _Silent:
+        def read(self):
+            return json.dumps({"status": "completed", "usage": {}}).encode()
+
+    wav = _write_loud_wav(tmp_path)
+    with patch.object(gemini, "urlopen", side_effect=[_Silent()] * 9) as mock:
+        assert gemini.Transcriber().transcribe_wav_sync(wav) == ""
+    assert mock.call_count == 1
+    assert [len(q._hits) for q in gemini._gemini_quotas] == [1, 0, 0]
+
+
 def test_malformed_steps_are_still_retried(gemini, tmp_path):
     class _Bad:
         def read(self):
@@ -422,7 +442,20 @@ def test_a_server_error_still_tries_the_other_keys(gemini, tmp_path):
 
 
 def test_shipped_default_backend_matches_the_plist_template(monkeypatch):
-    """The code default and launchd/*.template must not disagree."""
+    """
+    The code default and launchd/*.template must not disagree. The template is
+    actually parsed here: asserting the code default alone let the two drift,
+    which is how they came to disagree in the first place.
+    """
+    import plistlib
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parent.parent
+        / "launchd/com.openspeaksy.plist.template"
+    )
+    shipped = plistlib.loads(template.read_bytes())["EnvironmentVariables"]
+
     monkeypatch.delenv("OPENSPEAKSY_STT_BACKEND", raising=False)
     monkeypatch.setenv("MISTRAL_API_KEY", "m")
     monkeypatch.setenv("GEMINI_API_KEYS", "k")
@@ -430,7 +463,26 @@ def test_shipped_default_backend_matches_the_plist_template(monkeypatch):
     import transcriber as t
     importlib.reload(t)
     assert t.STT_BACKEND == "gemini"
+    assert shipped["OPENSPEAKSY_STT_BACKEND"] == t.STT_BACKEND
+    assert shipped["OPENSPEAKSY_POLISH_STT_BACKEND"] == t.STT_BACKEND
     importlib.reload(t)
+
+
+def test_the_template_does_not_relaunch_after_a_clean_exit():
+    """
+    A fatal misconfiguration exits 0 on purpose. Under a bare KeepAlive=true
+    launchd relaunches it every ThrottleInterval forever, so the two have to
+    stay in step.
+    """
+    import plistlib
+    from pathlib import Path
+
+    template = (
+        Path(__file__).resolve().parent.parent
+        / "launchd/com.openspeaksy.plist.template"
+    )
+    keep_alive = plistlib.loads(template.read_bytes())["KeepAlive"]
+    assert keep_alive == {"SuccessfulExit": False}
 
 
 def _oversized_wav(tmp_path, gemini):
@@ -459,7 +511,10 @@ def test_an_oversized_recording_stops_at_the_first_key(gemini, tmp_path):
         with pytest.raises(gemini.RequestRejectedError, match="too large"):
             gemini.Transcriber().transcribe_wav_sync(wav)
     assert mock.call_count == 0  # never reached the network
-    assert [len(q._hits) for q in gemini._gemini_quotas] == [1, 0, 0]
+    # And no slot is consumed at all. This assertion used to read [1, 0, 0] --
+    # it locked in a slot burned on a request that never left the machine,
+    # which a file stuck in .pending repeated every 5 minutes.
+    assert [len(q._hits) for q in gemini._gemini_quotas] == [0, 0, 0]
 
 
 def test_request_rejected_is_a_transcription_error(gemini):
@@ -532,28 +587,103 @@ def test_a_bad_request_on_a_later_key_also_stops_the_rotation(gemini, tmp_path):
     assert _keys_used(mock) == ["key-one", "key-two"]
 
 
-def test_retry_hint_is_parsed_from_the_gemini_429_body():
+def _gemini_429(body, headers=None):
     """
-    Gemini puts the wait in the body text, not a Retry-After header. Missing it
-    means resuming against a key the provider still refuses.
+    A 429 shaped the way Google actually sends it: the status line says nothing
+    but "Too Many Requests", and the wait is only in the JSON body.
     """
     import io as _io
     from urllib.error import HTTPError
-    import transcriber as t
-    body = (
-        "Quota exceeded for metric: ...free_tier_requests, limit: 25, "
-        "model: gemini-3.5-transcribe\nPlease retry in 34.5s."
+    payload = json.dumps({
+        "error": {"code": 429, "message": body, "status": "RESOURCE_EXHAUSTED"}
+    }).encode()
+    return HTTPError(
+        "https://x/", 429, "Too Many Requests", headers or {}, _io.BytesIO(payload)
     )
-    assert t._retry_after_seconds(
-        HTTPError("https://x/", 429, body, {}, _io.BytesIO(b""))
-    ) == 34.5
-    # A real Retry-After header takes precedence.
-    assert t._retry_after_seconds(
-        HTTPError("https://x/", 429, "rate", {"Retry-After": "12"}, _io.BytesIO(b""))
-    ) == 12.0
-    assert t._retry_after_seconds(
-        HTTPError("https://x/", 500, "boom", {}, _io.BytesIO(b""))
-    ) is None
+
+
+GEMINI_429_BODY = (
+    "Quota exceeded for metric: generate_content_free_tier_requests, "
+    "limit: 25, model: gemini-3.5-transcribe. Please retry in 34.5s."
+)
+
+
+def test_retry_hint_survives_the_wrap_into_transcription_error(gemini):
+    """
+    The bug this covers: str(HTTPError) is only "HTTP Error 429: Too Many
+    Requests". The wait Gemini reports lives in the BODY, so wrapping str(error)
+    threw it away and every cooldown silently fell back to the 40 s default --
+    measured 12 times out of 12 on the live log. The hint has to survive the
+    boundary between the HTTP layer and the key rotation.
+    """
+    request = object()
+    with patch.object(gemini, "urlopen", side_effect=_gemini_429(GEMINI_429_BODY)):
+        with pytest.raises(gemini.TranscriptionError) as raised:
+            gemini._request_json(request, "Gemini transcription", retry_throttling=False)
+    error = raised.value
+    assert "429" in str(error)
+    assert "Please retry in 34.5s" in str(error)
+    assert gemini._retry_after_seconds(error) == 34.5
+
+
+def test_a_retry_after_header_beats_the_body_text(gemini):
+    request = object()
+    error = _gemini_429(GEMINI_429_BODY, headers={"Retry-After": "12"})
+    with patch.object(gemini, "urlopen", side_effect=error):
+        with pytest.raises(gemini.TranscriptionError) as raised:
+            gemini._request_json(request, "Gemini transcription", retry_throttling=False)
+    # Headers must reach the wrapped error too, or the precedence is moot.
+    assert gemini._retry_after_seconds(raised.value) == 12.0
+
+
+def test_error_body_is_unwrapped_bounded_and_single_line(gemini):
+    """
+    The body is provider text going into a log line and an on-screen pill, so
+    it is unwrapped from its JSON envelope, collapsed to one line, and capped.
+    """
+    import io as _io
+    from urllib.error import HTTPError
+    error = HTTPError(
+        "https://x/", 400, "Bad Request", {},
+        _io.BytesIO(json.dumps({"error": {"message": "a\n b  c " + "x" * 900}}).encode()),
+    )
+    text = gemini._http_error_text(error)
+    assert text.startswith("HTTP Error 400: Bad Request: a b c xxx")
+    assert "\n" not in text
+    assert len(text) < 600
+    assert text.endswith("…")
+
+
+def test_a_body_that_is_not_json_is_still_reported(gemini):
+    import io as _io
+    from urllib.error import HTTPError
+    error = HTTPError(
+        "https://x/", 503, "Service Unavailable", {}, _io.BytesIO(b"upstream down")
+    )
+    assert gemini._http_error_text(error) == (
+        "HTTP Error 503: Service Unavailable: upstream down"
+    )
+
+
+def test_retry_after_seconds_ignores_unrelated_errors(gemini):
+    assert gemini._retry_after_seconds(gemini.TranscriptionError("boom")) is None
+
+
+def test_a_full_window_reports_when_a_slot_frees_up(gemini):
+    """
+    A key can be closed with no provider cooldown at all, just a full request
+    window. Reporting 0.0 there left the "all keys are rate-limited" message
+    unable to tell the user when to try again.
+    """
+    quota = gemini._SlidingWindowQuota(2, 60.0)
+    assert quota.cooling_down_for() == 0.0
+    quota.try_acquire()
+    quota.try_acquire()
+    assert quota.try_acquire() is None
+    assert 55.0 < quota.cooling_down_for() <= 60.0
+    # A provider cooldown that outlasts the window still wins.
+    quota.penalize(cooldown_sec=120)
+    assert quota.cooling_down_for() > 110.0
 
 
 def test_cooldown_outlasts_the_request_window(gemini):

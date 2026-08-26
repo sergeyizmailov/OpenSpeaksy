@@ -120,9 +120,12 @@ GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-transcribe")
 # Inline audio is capped at 20 MB per request including the base64 overhead,
-# which inflates the payload by a third. The watchdog caps a recording at
-# 300 s (~9.6 MB of 16 kHz mono WAV, ~12.8 MB encoded), so real dictation
-# stays inside the limit and this guard only catches recovery of odd files.
+# which inflates the payload by a third. 14 MB of 16 kHz mono WAV is about
+# 7.6 minutes of speech. Past that this backend cannot take the recording at
+# all — the watchdog's RECORDING_TIMEOUT_SEC is an hour, a memory guard rather
+# than a transcription guarantee — so an over-long recording is rejected here,
+# reported to the user, and quarantined by the caller instead of being retried
+# forever. Lifting the ceiling means uploading through the Files API.
 GEMINI_MAX_INLINE_BYTES = 14 * 1024 * 1024
 # The free tier enforces at least TWO caps under one metric name: 3 requests per
 # minute, and a second cap reported as "limit: 25" over a longer window. Counting
@@ -144,6 +147,58 @@ GEMINI_MAX_COOLDOWN_SEC = 300.0
 GEMINI_EXHAUSTED_BACKEND = os.environ.get(
     "OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND", "mistral"
 ).strip().lower()
+
+
+# Enough of an error body to hold a provider's explanation without letting a
+# hostile or broken endpoint push an unbounded string into the log and the UI.
+HTTP_BODY_READ_LIMIT = 4096
+HTTP_BODY_KEEP_CHARS = 500
+
+
+def _http_error_text(error):
+    """
+    The status line PLUS the provider's own explanation from the response body.
+
+    str(HTTPError) stops at "HTTP Error 429: Too Many Requests". Everything that
+    matters — which quota was hit, and how long to wait — is only in the body,
+    so wrapping str(error) threw away the one detail worth having. The body must
+    be read before the handle is closed.
+    """
+    base = f"HTTP Error {error.code}: {error.reason}"
+    try:
+        raw = error.read(HTTP_BODY_READ_LIMIT).decode("utf-8", "replace")
+    except Exception:
+        return base
+    detail = " ".join(raw.split())
+    if not detail:
+        return base
+    # Providers wrap the useful sentence in JSON. Unwrap it when it parses;
+    # a body truncated by the read limit just falls back to the raw text.
+    try:
+        parsed = json.loads(detail)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict):
+        inner = parsed.get("error")
+        message = inner.get("message") if isinstance(inner, dict) else None
+        if isinstance(message, str) and message.strip():
+            detail = " ".join(message.split())
+    if len(detail) > HTTP_BODY_KEEP_CHARS:
+        detail = detail[:HTTP_BODY_KEEP_CHARS] + "…"
+    return f"{base}: {detail}"
+
+
+def _provider_error(error, detail):
+    """
+    Wrap a transport or HTTP failure in the exception the callers understand,
+    carrying the response headers along. _retry_after_seconds reads them off
+    the raised error, so dropping them here loses the provider's Retry-After.
+    """
+    cls = ProviderUnavailableError if _is_connect_failure(error) else TranscriptionError
+    wrapped = cls(detail)
+    wrapped.headers = getattr(error, "headers", None)
+    wrapped.code = getattr(error, "code", None)
+    return wrapped
 
 
 def _retry_after_seconds(error):
@@ -238,9 +293,21 @@ class _SlidingWindowQuota:
                 )
 
     def cooling_down_for(self):
-        """Seconds until this key is usable again, 0.0 when it is usable now."""
+        """
+        Seconds until this key is usable again, 0.0 when it is usable now.
+        Covers BOTH reasons a key can be closed: a provider cooldown, and a
+        request window that is simply full. Reporting 0.0 for the second case
+        made the "all keys are rate-limited" message unable to say when.
+        """
+        now = time.monotonic()
         with self._lock:
-            return max(0.0, self._blocked_until - time.monotonic())
+            wait = self._blocked_until - now
+            self._prune(now)
+            if self._limit > 0 and len(self._hits) >= self._limit:
+                # The oldest reservation has to age out of the window before a
+                # slot exists, cooldown or not.
+                wait = max(wait, self._hits[0][0] + self._window - now)
+            return max(0.0, wait)
 
 
 # One independent quota per key, in the same order as GEMINI_API_KEYS.
@@ -458,21 +525,21 @@ def _request_json(request, label, validate=None, retry_throttling=True):
                 and error.code == 429
             ):
                 delay = None
+            detail = str(error)
             if isinstance(error, HTTPError):
+                detail = _http_error_text(error)
                 try:
                     error.close()
                 except Exception:
                     pass
             if delay is None or attempt >= max_attempts:
                 logger.error(
-                    f"{label} failed after {attempt} attempt(s): {error}"
+                    f"{label} failed after {attempt} attempt(s): {detail}"
                 )
-                if _is_connect_failure(error):
-                    raise ProviderUnavailableError(str(error)) from error
-                raise TranscriptionError(str(error)) from error
+                raise _provider_error(error, detail) from error
             logger.warning(
                 f"{label} transient failure on attempt "
-                f"{attempt}/{max_attempts}: {error}; "
+                f"{attempt}/{max_attempts}: {detail}; "
                 f"retrying in {delay:g}s"
             )
             time.sleep(delay)
@@ -531,11 +598,14 @@ def _gemini_transcription_text(result, wav_path):
     if not isinstance(result, dict):
         raise _RetryableProviderResponseError("Gemini response is not an object")
     # A completed interaction with no steps at all is how this model reports
-    # "no speech here" — silence must not burn the whole retry budget, which
-    # on the free tier is the entire per-minute quota.
+    # "no speech here". It is a verdict on the audio, not a glitch, so it must
+    # not reach the retry path at all: three attempts on this key plus a walk
+    # through every other key spends up to nine free-tier requests to be told
+    # the same thing. Deliberately NOT gated on RMS — a microphone recording
+    # room noise or music clears the silence threshold easily.
     steps = result.get("steps")
     if steps is None and result.get("status") == "completed":
-        steps = []
+        return ""
     if not isinstance(steps, list):
         raise _RetryableProviderResponseError("Gemini response has no steps")
     chunks = [
@@ -706,11 +776,9 @@ class Transcriber:
         # first, since only the raised exception reaches the caller and the log.
         last_error = None
         routine_error = None
-        skipped = 0
         for index, (key, quota) in enumerate(zip(GEMINI_API_KEYS, _gemini_quotas)):
             token = quota.try_acquire()
             if token is None:
-                skipped += 1
                 continue
             try:
                 text = self._transcribe_gemini(wav_path, language=language, api_key=key)
@@ -723,6 +791,11 @@ class Transcriber:
                 last_error = last_error or e
                 logger.warning(f"Gemini key {index + 1} unreachable: {e}")
             except TranscriptionError as e:
+                if isinstance(e, RequestRejectedError):
+                    # Our own guard rejected the payload before any HTTP call,
+                    # so this key's minute must not pay for a request that
+                    # never happened.
+                    quota.release(token)
                 if _is_rate_limited(e):
                     # Google's accounting disagrees with ours; trust Google's,
                     # including how long it wants us to stay away.
@@ -880,13 +953,15 @@ class Transcriber:
         if not key:
             raise TranscriptionError("Gemini API key is not configured")
 
+        # Sized before reading: a rejected recording must not be pulled into
+        # memory in full just to be turned down.
+        size = os.path.getsize(wav_path)
+        if size > GEMINI_MAX_INLINE_BYTES:
+            raise RequestRejectedError(
+                f"recording is too large for inline Gemini upload: {size} bytes"
+            )
         with open(wav_path, "rb") as f:
             wav_data = f.read()
-        if len(wav_data) > GEMINI_MAX_INLINE_BYTES:
-            raise RequestRejectedError(
-                f"recording is too large for inline Gemini upload: "
-                f"{len(wav_data)} bytes"
-            )
 
         # Audio alone, with no text part. This model does nothing but
         # transcribe, so an instruction is dead weight: measured on real audio,

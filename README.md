@@ -26,7 +26,7 @@ Same idea with your own API credentials: Gemini 3.5 Transcribe handles transcrip
 |---|---|---|
 | Price | **MIT licensed** — bring your own API keys | $10 – 15 / month |
 | Transcription latency | Network-dependent | similar |
-| Account / signup | One Mistral key | Required |
+| Account / signup | A Gemini key and a Mistral key | Required |
 | Usage limits | Your providers' quotas | Daily / monthly caps |
 | Ads & upsells | Never | Sometimes |
 | Source code | Open | Closed |
@@ -123,13 +123,15 @@ automatically.
 
 ### Change a hotkey
 
-Two pairs of constants near the top of [`main.py`](main.py) — the dictate hotkey and the Russian→English translate hotkey:
+Three pairs of constants near the top of [`main.py`](main.py), one per hotkey. Change both halves of a pair: the keycode identifies the key, the flag distinguishes the right-hand modifier from its left-hand twin.
 
 ```python
 HOTKEY_KEYCODE    = 0x36   # right Command — dictate
 HOTKEY_FLAG       = 0x10
 TRANSLATE_KEYCODE = 0x3D   # right Option  — Russian → English
 TRANSLATE_FLAG    = 0x40
+POLISH_KEYCODE    = 0x3C   # right Shift   — Russian → Polish
+POLISH_FLAG       = 0x04
 ```
 
 Common alternatives:
@@ -154,7 +156,7 @@ The translate path (right ⌥) does Gemini transcription → Mistral translation
 | `OPENSPEAKSY_STT_BACKEND` | `gemini` | STT provider: `gemini` or `mistral` |
 | `OPENSPEAKSY_DICTATE_LANGUAGE` | empty | Language hint for right Command; empty means auto-detect, `ru` forces Russian |
 | `OPENSPEAKSY_POLISH_STT_BACKEND` | inherits `OPENSPEAKSY_STT_BACKEND` | STT provider used only by right Shift; the language hint is always Russian |
-| `MISTRAL_MODEL` | `voxtral-mini-2602` | Primary speech-to-text model |
+| `MISTRAL_MODEL` | `voxtral-mini-2602` | Model used when the STT backend is `mistral`, and by the rate-limit fallback |
 | `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model used to translate into English/Polish |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Lower = more literal, higher = more natural phrasing |
 | `GEMINI_API_KEYS` | empty | Comma-separated Gemini keys. The free per-minute quota is metered per project, so each key adds its own allowance |
@@ -239,8 +241,9 @@ Captures startup, watchdog events, errors, and recovery. Per-transcription text 
 | Hotkey ignored, nothing happens | Input Monitoring not granted to `venv/bin/python` |
 | Recording works but text doesn't paste | Accessibility not granted to the same binary |
 | No microphone prompt on first try | Microphone permission denied earlier — re-enable it in System Settings → Privacy & Security → Microphone |
-| Coral `!` appears immediately when recording starts | Microphone access is denied/restricted, or Core Audio could not open the input device |
-| Coral `!` overlay every time | Mistral/selected STT key invalid, quota exhausted, or no internet — check the log |
+| "Microphone access is blocked in System Settings" appears as recording starts | Microphone access is denied or restricted, or Core Audio could not open the input device |
+| "Rate limited, try again in Ns" | Every Gemini key is throttled and the fallback is disabled; the number comes from the provider itself |
+| Any other message in the pill | The provider's own words, verbatim when unrecognized — the same text is in the log |
 | Hotkey ignored only in some apps (1Password, sudo prompts) | macOS Secure Input is active there; click out and back in |
 
 For specifics, check the [log](#logs).

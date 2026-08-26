@@ -371,9 +371,14 @@ class Overlay:
         # Bumped on every _show. The error-flash timer captures the value at
         # flash time, so a flash can never hide a cycle that started after it.
         self._gen = 0
+        # Caller-supplied owner of what is on screen (the job id, in practice).
+        # A worker finishing after the next cycle already began must not hide
+        # that cycle's pill: state goes idle at the worker's claim, so a new
+        # recording can legitimately start while the worker is still pasting.
+        self._token = None
 
-    def show(self, mode, label=None):
-        AppHelper.callAfter(self._show, mode, label, None)
+    def show(self, mode, label=None, token=None):
+        AppHelper.callAfter(self._show, mode, label, None, token)
 
     def flash_error(self, message=None, duration=None):
         """
@@ -385,8 +390,18 @@ class Overlay:
             duration = _read_time(message) if message else ERROR_FLASH_SEC
         AppHelper.callAfter(self._flash_error, message, duration)
 
-    def hide(self):
-        AppHelper.callAfter(self._hide)
+    def hide(self, token=None):
+        """
+        Take the pill down. With a token it is taken down only if that token
+        still owns what is on screen, so a late worker cannot collapse the
+        overlay of a cycle that started after it.
+        """
+        AppHelper.callAfter(self._hide_owned, token)
+
+    def _hide_owned(self, token):
+        if token is not None and self._token != token:
+            return
+        self._hide()
 
     def _flash_error(self, message, duration):
         self._show("error", None, message)
@@ -444,11 +459,12 @@ class Overlay:
         self._panel = panel
         self._view = view
 
-    def _show(self, mode, label, message=None):
+    def _show(self, mode, label, message=None, token=None):
         _init_colors()
         self._ensure_panel()
         self._hiding = False
         self._gen += 1
+        self._token = token
 
         self._panel.setFrameOrigin_(self._panel_origin())
         self._view.setLabel_(label)

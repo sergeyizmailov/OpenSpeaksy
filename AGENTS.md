@@ -92,7 +92,10 @@ Conventions in this codebase:
 - **Two provider keys in play**: `GEMINI_API_KEYS` (comma-separated) does all
   speech-to-text; `MISTRAL_API_KEY` does translation only. Translation ALWAYS
   goes to Mistral, so its key is required whatever `OPENSPEAKSY_STT_BACKEND` is.
-  Mistral Voxtral stays wired as the alternate STT backend but is unused.
+  Mistral Voxtral stays wired as the alternate STT backend and IS reached in
+  normal operation: OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND defaults to `mistral`,
+  so every Gemini key being throttled routes the dictation to it. Do not treat
+  that path as dead code.
 - **Gemini quota is per project, so keys are a resource**: each key in
   `GEMINI_API_KEYS` gets its own `_SlidingWindowQuota` and a request takes the
   first key with room. Adding a key raises the ceiling; reusing one does not

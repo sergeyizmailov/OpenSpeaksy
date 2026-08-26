@@ -43,11 +43,12 @@ Short imperative subject, then a paragraph explaining *why*. Bullet list of
 changes if helpful. Example:
 
 ```
-Collapse repeated transcripts and log paste length
+Stop an oversized recording from draining every Gemini key
 
-Speech models can occasionally emit the same short dictation twice with tiny
-wording differences. SequenceMatcher with a 0.80 ratio on length-bucketed
-input catches these without affecting genuinely distinct sentences.
+The local size guard raised a plain TranscriptionError, so the key rotation
+did not recognize it as a verdict on the payload and walked all three keys to
+collect the same error once per key. Raising a distinct type keeps the guard
+and the check from drifting apart again.
 ```
 
 ## Reporting bugs

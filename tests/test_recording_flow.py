@@ -9,10 +9,10 @@ class _Overlay:
     def __init__(self):
         self.events = []
 
-    def hide(self):
-        self.events.append(("hide", None))
+    def hide(self, token=None):
+        self.events.append(("hide", token))
 
-    def show(self, mode, label=None):
+    def show(self, mode, label=None, token=None):
         self.events.append((mode, label))
 
     def flash_error(self, message=None, duration=None):
@@ -101,15 +101,24 @@ def test_worker_start_failure_keeps_saved_wav(monkeypatch, tmp_path):
         def start(self):
             raise RuntimeError("thread unavailable")
 
+    def _save(audio, mode):
+        wav.write_bytes(b"RIFF----WAVEfmt ")
+        return wav
+
     monkeypatch.setattr(main, "recorder", Recorder())
     monkeypatch.setattr(main, "overlay", overlay)
-    monkeypatch.setattr(main, "save_pending_recording", lambda audio, mode: wav)
+    monkeypatch.setattr(main, "save_pending_recording", _save)
     monkeypatch.setattr(main.threading, "Thread", Thread)
 
     main.on_key_up(main.HOTKEY_KEYCODE)
 
     assert main.state == "idle"
     assert ("error", "Could not start transcription") in overlay.events
+    # The point of the test, and previously unasserted: the audio is still on
+    # disk for the retry loop. The stub used to return a path it never wrote,
+    # so "keeps_saved_wav" was checking nothing.
+    assert wav.exists()
+    assert main.current_wav_path is None
 
 
 def test_recorder_start_failure_flashes_error(monkeypatch):

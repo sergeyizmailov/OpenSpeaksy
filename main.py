@@ -46,6 +46,7 @@ from transcriber import (
     Transcriber,
     TranscriptionError,
     ProviderUnavailableError,
+    RequestRejectedError,
     write_wav,
 )
 from overlay import Overlay
@@ -329,6 +330,7 @@ def _watchdog_tick():
     recording cannot start between the state reset and overlay cleanup.
     """
     global state, state_ts, current_job_id, current_hotkey, current_mode
+    global current_wav_path
     finish_keycode = None
     finish_reason = None
 
@@ -385,8 +387,12 @@ def pending_retry_loop():
     Re-transcribe recordings that failed mid-session (dead network, provider
     outage) so they no longer wait for the next app restart. Mirrors startup
     recovery semantics: combined text goes to the clipboard only, never an
-    unprompted paste. Runs only while idle and under _clipboard_gate so its
-    clipboard write cannot race a live dictation paste.
+    unprompted paste.
+
+    The clipboard gate is taken inside recover_pending_recordings, around the
+    clipboard write alone. Holding it across the transcription calls would
+    block a live dictation's paste for as long as the provider takes on every
+    queued file — long enough for the watchdog to void that dictation.
     """
     while True:
         time.sleep(PENDING_RETRY_POLL_SEC)
@@ -396,11 +402,7 @@ def pending_retry_loop():
                 has_pending = current_wav_path is None
             if not idle or not has_pending:
                 continue
-            with _clipboard_gate:
-                with state_lock:
-                    still_idle = state == "idle"
-                if still_idle:
-                    recover_pending_recordings()
+            recover_pending_recordings()
         except Exception as e:
             log(f"pending retry loop error: {e}")
 
@@ -566,6 +568,7 @@ def process_pending_recording(path, job_id, mode):
     """
     text = None
     notice = None
+    rejected = False
     try:
         if mode == MODE_TRANSLATE:
             text = transcriber.transcribe_and_translate_sync(path)
@@ -573,6 +576,13 @@ def process_pending_recording(path, job_id, mode):
             text = transcriber.transcribe_to_polish_sync(path)
         else:
             text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
+    except RequestRejectedError as e:
+        # Unacceptable to the provider as-is, so a retry is guaranteed to fail
+        # the same way. Keeping it pending would burn a quota slot every
+        # 5 minutes for the rest of the session.
+        log(f"transcription rejected {path.name}: {e}")
+        notice = error_notice(e)
+        rejected = True
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
         notice = error_notice(e)
@@ -593,18 +603,20 @@ def process_pending_recording(path, job_id, mode):
 
         if notice:
             overlay.flash_error(notice)
-            return  # keep file for retry
+            if rejected:
+                quarantine_path(path, "rejected by the provider")
+            return  # otherwise keep the file for retry
 
         if text:
             if paste_text(text):
                 log(f"pasted {len(text)} chars from {path.name}")
-                overlay.hide()
+                overlay.hide(token=job_id)
             else:
                 overlay.flash_error("Could not paste into this app")
                 return  # keep file
         else:
             log(f"no speech detected in {path.name}")
-            overlay.hide()
+            overlay.hide(token=job_id)
 
         delete_pending_recording(path)
 
@@ -642,10 +654,17 @@ def recover_pending_recordings():
             except OSError as e:
                 log(f"remove partial write error {tmp.name}: {e}")
 
+    # A live dictation's WAV is owned by its worker. A cycle can start in the
+    # gap between this pass deciding to run and the glob below, and both
+    # transcribing the same file would spend the quota twice and let recovery
+    # delete a file the worker still needs.
+    with state_lock:
+        live = current_wav_path
     paths = sorted(
         path
         for pending_dir in existing_dirs
         for path in pending_dir.glob("*.wav")
+        if path != live
     )
     if not paths:
         return
@@ -679,6 +698,14 @@ def recover_pending_recordings():
             log(f"recovery paused: provider unreachable ({e}); "
                 f"{len(paths) - index} recording(s) pending")
             break
+        except RequestRejectedError as e:
+            # The provider will never accept this payload — too long for the
+            # backend, or malformed. Leaving it pending means retrying it every
+            # 5 minutes forever, and each attempt spends a key's quota slot
+            # that live dictation needs. Set it aside instead of losing it.
+            quarantine_path(path, f"rejected by the provider: {e}")
+            skipped += 1
+            continue
         except Exception as e:
             # A file-specific problem (e.g. the provider persistently returns
             # an empty transcript for this audio). Skip it so one poison file
@@ -699,7 +726,11 @@ def recover_pending_recordings():
     if non_empty:
         combined = RECOVERY_SEPARATOR.join(t for _, t in non_empty)
         try:
-            copy_to_clipboard(combined)
+            # The gate covers the clipboard write only. A live worker holds it
+            # across its own claim and paste, so this can never land between
+            # the two — and it no longer blocks that paste behind the network.
+            with _clipboard_gate:
+                copy_to_clipboard(combined)
             log(f"recovered {len(non_empty)} dictation(s) ({len(combined)} chars total) to clipboard")
         except Exception as e:
             log(f"recovery clipboard error: {e}")
@@ -807,7 +838,7 @@ def on_key_up(keycode):
             overlay.flash_error("Could not save the recording")
         return
 
-    overlay.show("loading", label=MODE_LABELS.get(mode))
+    overlay.show("loading", label=MODE_LABELS.get(mode), token=job_id)
     global current_wav_path
     current_wav_path = wav_path
     try:
@@ -937,8 +968,13 @@ def main():
 
     fatal = configuration_error()
     if fatal:
+        # Exit CLEANLY, despite being a fatal error. Only editing the plist can
+        # fix this, and that needs a reload anyway, so a nonzero exit under
+        # KeepAlive={SuccessfulExit: false} would just relaunch every
+        # ThrottleInterval forever. A missing permission still exits nonzero,
+        # because there a relaunch is exactly what picks the grant up.
         log(f"FATAL: {fatal}")
-        os._exit(1)
+        return
 
     translator = f"Mistral {MISTRAL_TRANSLATION_MODEL}"
     if STT_BACKEND == "mistral":

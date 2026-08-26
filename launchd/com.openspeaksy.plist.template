@@ -32,8 +32,14 @@
     </dict>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Restart on a crash or a launchctl stop, but NOT after a clean exit:
+         a fatal misconfiguration exits 0 on purpose, and relaunching it every
+         ThrottleInterval would only spin. -->
     <key>KeepAlive</key>
-    <true/>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
     <key>ThrottleInterval</key>
     <integer>5</integer>
     <key>StandardOutPath</key>
