@@ -13,7 +13,7 @@ Powered by Gemini 3.5 Transcribe & Mistral Medium 3.5.
 
 <br>
 
-<img src="docs/logo.png" alt="OpenSpeaksy" width="620">
+<img src="docs/banner.png" alt="OpenSpeaksy" width="620">
 
 </div>
 
