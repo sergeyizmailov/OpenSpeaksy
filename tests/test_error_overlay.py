@@ -127,3 +127,50 @@ def test_longer_text_stays_up_longer():
 def test_read_time_is_bounded():
     assert o._read_time("x") >= o.ERROR_FLASH_SEC
     assert o._read_time("x" * o.ERROR_MAX_CHARS) <= o.ERROR_MESSAGE_MAX_SEC
+
+
+# --- who owns the pill ------------------------------------------------------
+
+class _Panel:
+    """Enough of an NSPanel to see whether _show was reached."""
+
+    def __init__(self):
+        self.shown = 0
+
+
+def test_a_late_workers_error_does_not_hijack_the_next_recording(monkeypatch):
+    """
+    The worker claims its job and the state machine goes idle BEFORE the paste,
+    so the user can start the next recording while the old worker is finishing.
+    An untokened error from that worker covered the new recording's pill and
+    then took it down mid-sentence. The failure is still in the log, and the
+    audio still waits in .pending for the retry loop.
+    """
+    ov = o.Overlay()
+    reached = []
+    monkeypatch.setattr(ov, "_show", lambda *a, **k: reached.append(a))
+    ov._token = 12  # a newer cycle owns the pill
+
+    ov._flash_error("Rate limited, try again in 52s", 3.0, token=9)
+    assert reached == []
+
+
+def test_the_owning_workers_error_is_shown(monkeypatch):
+    ov = o.Overlay()
+    reached = []
+    monkeypatch.setattr(ov, "_show", lambda *a, **k: reached.append(a))
+    ov._token = 9
+
+    ov._flash_error("Rate limited, try again in 52s", 3.0, token=9)
+    assert len(reached) == 1
+
+
+def test_an_untokened_error_always_shows(monkeypatch):
+    """Errors raised before a job exists (microphone, recorder) have no token."""
+    ov = o.Overlay()
+    reached = []
+    monkeypatch.setattr(ov, "_show", lambda *a, **k: reached.append(a))
+    ov._token = 12
+
+    ov._flash_error("Could not start recording", 1.2, token=None)
+    assert len(reached) == 1

@@ -380,15 +380,21 @@ class Overlay:
     def show(self, mode, label=None, token=None):
         AppHelper.callAfter(self._show, mode, label, None, token)
 
-    def flash_error(self, message=None, duration=None):
+    def flash_error(self, message=None, duration=None, token=None):
         """
         Show the error pill. With a message the pill widens to fit it and stays
         up long enough to read; without one it is the old compact "!" flash.
+
+        A token means "only if this cycle still owns the pill" — same reason
+        hide() takes one. A worker that failed after the user already started
+        the next recording would otherwise cover that recording's pill with a
+        stale error and then take it down mid-sentence. The failure is in the
+        log either way, and the audio is preserved for the retry loop.
         """
         message = _clean_message(message)
         if duration is None:
             duration = _read_time(message) if message else ERROR_FLASH_SEC
-        AppHelper.callAfter(self._flash_error, message, duration)
+        AppHelper.callAfter(self._flash_error, message, duration, token)
 
     def hide(self, token=None):
         """
@@ -403,8 +409,10 @@ class Overlay:
             return
         self._hide()
 
-    def _flash_error(self, message, duration):
-        self._show("error", None, message)
+    def _flash_error(self, message, duration, token=None):
+        if token is not None and self._token != token:
+            return
+        self._show("error", None, message, token)
         gen = self._gen
         threading.Timer(
             duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)

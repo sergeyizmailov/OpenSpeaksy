@@ -174,6 +174,22 @@ def test_no_steps_on_LOUD_audio_is_also_one_request_not_nine(gemini, tmp_path):
     assert [len(q._hits) for q in gemini._gemini_quotas] == [1, 0, 0]
 
 
+def test_an_empty_steps_array_is_also_a_verdict_not_a_glitch(gemini, tmp_path):
+    """
+    The first fix only caught a MISSING steps key. An empty array says the same
+    thing — completed, no output — and used to take the retry path on audible
+    audio. A non-list steps value is still garbage and still retried below.
+    """
+    class _Empty:
+        def read(self):
+            return json.dumps({"status": "completed", "steps": []}).encode()
+
+    wav = _write_loud_wav(tmp_path)
+    with patch.object(gemini, "urlopen", side_effect=[_Empty()] * 9) as mock:
+        assert gemini.Transcriber().transcribe_wav_sync(wav) == ""
+    assert mock.call_count == 1
+
+
 def test_malformed_steps_are_still_retried(gemini, tmp_path):
     class _Bad:
         def read(self):

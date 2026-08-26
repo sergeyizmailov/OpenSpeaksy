@@ -26,7 +26,7 @@ class _Overlay:
     def show(self, mode, label=None, token=None):
         self.events.append((mode, label))
 
-    def flash_error(self, message=None, duration=None):
+    def flash_error(self, message=None, duration=None, token=None):
         self.events.append(("error", message))
 
 
@@ -358,3 +358,61 @@ def test_processing_error_message_carries_the_providers_wait(worker, monkeypatch
 def test_no_stray_threads_are_left_behind():
     """Guards against a test above leaking a live timer into the next module."""
     assert threading.active_count() >= 1
+
+
+def test_shutdown_waits_for_an_in_flight_save(monkeypatch):
+    """
+    on_key_up holds _save_gate from the moment the samples leave the recorder
+    until the WAV is on disk. A signal arriving in that window used to exit the
+    process on top of it, losing audio that existed only in a local variable.
+    """
+    order = []
+    monkeypatch.setattr(main, "state", "processing")
+    monkeypatch.setattr(main, "current_mode", None)
+    monkeypatch.setattr(main, "os", _ExitRecorder(order))
+
+    main._save_gate.acquire()
+    try:
+        done = threading.Event()
+
+        def _shutdown():
+            main.handle_shutdown(15, None)
+            done.set()
+
+        threading.Thread(target=_shutdown, daemon=True).start()
+        assert not done.wait(0.3), "shutdown did not wait for the save"
+        order.append("saved")
+    finally:
+        main._save_gate.release()
+
+    assert done.wait(2.0), "shutdown never completed after the save"
+    assert order == ["saved", "exit"]
+
+
+def test_shutdown_is_not_blocked_forever_by_a_wedged_save(monkeypatch):
+    order = []
+    monkeypatch.setattr(main, "state", "idle")
+    monkeypatch.setattr(main, "SHUTDOWN_SAVE_WAIT_SEC", 0.05)
+    monkeypatch.setattr(main, "os", _ExitRecorder(order))
+
+    main._save_gate.acquire()
+    try:
+        main.handle_shutdown(15, None)
+    finally:
+        main._save_gate.release()
+
+    assert order == ["exit"]
+
+
+class _ExitRecorder:
+    """Stands in for the os module so _exit does not kill the test run."""
+
+    def __init__(self, order):
+        self._order = order
+
+    def _exit(self, _code):
+        self._order.append("exit")
+
+    def __getattr__(self, name):
+        import os as _os
+        return getattr(_os, name)

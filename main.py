@@ -85,6 +85,9 @@ RECORDING_TIMEOUT_SEC = 3600
 # legitimate retry budget so it never invalidates a worker still making progress.
 PROCESSING_TIMEOUT_SEC = 360
 WATCHDOG_POLL_SEC = 5
+# How long a shutdown waits for an in-flight recording to reach disk. Only a
+# wedged save should ever come close to it.
+SHUTDOWN_SAVE_WAIT_SEC = 2.0
 
 # Long-term observability
 PENDING_AGE_WARN_DAYS = 7
@@ -193,14 +196,24 @@ def _microphone_access_is_blocked():
 def handle_shutdown(signum, _frame):
     global state, state_ts, current_job_id, current_hotkey, current_mode
 
-    with state_lock:
-        was_recording = state == "recording"
-        mode = current_mode or MODE_DICTATE
-        state = "idle"
-        state_ts = time.monotonic()
-        current_job_id += 1
-        current_hotkey = None
-        current_mode = None
+    # A key-up already in flight holds the samples in a local variable, a few
+    # milliseconds from having them on disk — and this handler exits the process
+    # outright. Wait for that save rather than landing on top of it. launchd
+    # allows seconds before SIGKILL, so a bounded wait is free; the timeout only
+    # exists so a wedged save cannot block shutdown forever.
+    saving = _save_gate.acquire(timeout=SHUTDOWN_SAVE_WAIT_SEC)
+    try:
+        with state_lock:
+            was_recording = state == "recording"
+            mode = current_mode or MODE_DICTATE
+            state = "idle"
+            state_ts = time.monotonic()
+            current_job_id += 1
+            current_hotkey = None
+            current_mode = None
+    finally:
+        if saving:
+            _save_gate.release()
 
     if was_recording:
         try:
@@ -226,6 +239,10 @@ state_lock = threading.Lock()
 # background pending-recovery pass, so recovered text can never race a fresh
 # dictation paste into the same clipboard.
 _clipboard_gate = threading.Lock()
+# Held by on_key_up from the moment the samples leave the recorder until the WAV
+# is on disk. handle_shutdown waits on it, closing the window where a signal
+# would exit the process while the only copy of the audio was a local variable.
+_save_gate = threading.Lock()
 # Per-job token. Each on_key_up bumps this and the spawned worker captures it.
 # A worker may only mutate state/clipboard if its token still matches current_job_id —
 # otherwise it is a stale completion from a watchdog-reset cycle.
@@ -602,7 +619,7 @@ def process_pending_recording(path, job_id, mode):
             return
 
         if notice:
-            overlay.flash_error(notice)
+            overlay.flash_error(notice, token=job_id)
             if rejected:
                 quarantine_path(path, "rejected by the provider")
             return  # otherwise keep the file for retry
@@ -612,7 +629,7 @@ def process_pending_recording(path, job_id, mode):
                 log(f"pasted {len(text)} chars from {path.name}")
                 overlay.hide(token=job_id)
             else:
-                overlay.flash_error("Could not paste into this app")
+                overlay.flash_error("Could not paste into this app", token=job_id)
                 return  # keep file
         else:
             log(f"no speech detected in {path.name}")
@@ -812,31 +829,32 @@ def on_key_up(keycode):
     if job_id is None:
         return
 
-    try:
-        audio = recorder.stop()
-        log(f"recording stopped: {len(audio)} samples; mode={mode}")
-    except Exception as e:
-        log(f"recorder.stop error: {e}")
-        if _claim_job_completion(job_id):
-            overlay.flash_error("Recording failed")
-        return
+    with _save_gate:
+        try:
+            audio = recorder.stop()
+            log(f"recording stopped: {len(audio)} samples; mode={mode}")
+        except Exception as e:
+            log(f"recorder.stop error: {e}")
+            if _claim_job_completion(job_id):
+                overlay.flash_error("Recording failed")
+            return
 
-    if len(audio) < MIN_AUDIO_SAMPLES:
-        log(
-            f"recording ignored: {len(audio)} samples is below "
-            f"{MIN_AUDIO_SAMPLES}-sample minimum"
-        )
-        overlay.hide()
-        _claim_job_completion(job_id)
-        return
+        if len(audio) < MIN_AUDIO_SAMPLES:
+            log(
+                f"recording ignored: {len(audio)} samples is below "
+                f"{MIN_AUDIO_SAMPLES}-sample minimum"
+            )
+            overlay.hide()
+            _claim_job_completion(job_id)
+            return
 
-    try:
-        wav_path = save_recording_with_fallback(audio, mode)
-    except Exception as e:
-        log(f"save pending recording error: {e}")
-        if _claim_job_completion(job_id):
-            overlay.flash_error("Could not save the recording")
-        return
+        try:
+            wav_path = save_recording_with_fallback(audio, mode)
+        except Exception as e:
+            log(f"save pending recording error: {e}")
+            if _claim_job_completion(job_id):
+                overlay.flash_error("Could not save the recording")
+            return
 
     overlay.show("loading", label=MODE_LABELS.get(mode), token=job_id)
     global current_wav_path

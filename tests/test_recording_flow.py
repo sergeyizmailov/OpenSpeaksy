@@ -15,7 +15,7 @@ class _Overlay:
     def show(self, mode, label=None, token=None):
         self.events.append((mode, label))
 
-    def flash_error(self, message=None, duration=None):
+    def flash_error(self, message=None, duration=None, token=None):
         # Record the message so tests can assert what the user actually sees.
         self.events.append(("error", message))
 

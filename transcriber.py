@@ -604,7 +604,7 @@ def _gemini_transcription_text(result, wav_path):
     # the same thing. Deliberately NOT gated on RMS — a microphone recording
     # room noise or music clears the silence threshold easily.
     steps = result.get("steps")
-    if steps is None and result.get("status") == "completed":
+    if result.get("status") == "completed" and steps in (None, []):
         return ""
     if not isinstance(steps, list):
         raise _RetryableProviderResponseError("Gemini response has no steps")
