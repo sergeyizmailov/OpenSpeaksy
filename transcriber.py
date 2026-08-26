@@ -118,16 +118,6 @@ GEMINI_API_KEYS = list(dict.fromkeys(GEMINI_API_KEYS))
 GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
 GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-transcribe")
-# The model takes its instruction as a plain text part alongside the audio.
-GEMINI_TRANSCRIBE_PROMPT = (
-    "Generate a verbatim transcript of the speech in this audio. "
-    "Output only the transcript text, with no commentary and no timestamps."
-)
-GEMINI_LANGUAGE_NAMES = {
-    "en": "English",
-    "pl": "Polish",
-    "ru": "Russian",
-}
 # Inline audio is capped at 20 MB per request including the base64 overhead,
 # which inflates the payload by a third. The watchdog caps a recording at
 # 300 s (~9.6 MB of 16 kHz mono WAV, ~12.8 MB encoded), so real dictation
@@ -875,14 +865,14 @@ class Transcriber:
                 f"{len(wav_data)} bytes"
             )
 
-        prompt = GEMINI_TRANSCRIBE_PROMPT
-        spoken = GEMINI_LANGUAGE_NAMES.get(language, language)
-        if spoken:
-            prompt += f" The speech is in {spoken}."
+        # Audio alone, with no text part. This model does nothing but
+        # transcribe, so an instruction is dead weight: measured on real audio,
+        # a bare request and a prompted one returned byte-identical transcripts,
+        # and the language hint changed nothing either (the model detects it).
+        # `language` is accepted for interface parity with the other backends.
         payload = json.dumps({
             "model": GEMINI_MODEL,
             "input": [
-                {"type": "text", "text": prompt},
                 {
                     "type": "audio",
                     "mime_type": "audio/wav",

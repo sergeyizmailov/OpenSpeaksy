@@ -74,10 +74,25 @@ def test_request_targets_the_interactions_api_with_inline_audio(gemini, tmp_path
     assert req.get_header("X-goog-api-key") == "key-one"
     body = json.loads(req.data.decode())
     assert body["model"] == gemini.GEMINI_MODEL
-    text_part, audio_part = body["input"]
-    assert "Russian" in text_part["text"]
+    # Audio alone: this model only transcribes, so no instruction is sent.
+    assert len(body["input"]) == 1
+    audio_part = body["input"][0]
+    assert audio_part["type"] == "audio"
     assert audio_part["mime_type"] == "audio/wav"
     assert base64.b64decode(audio_part["data"]) == wav.read_bytes()
+
+
+def test_no_text_part_is_sent_with_the_audio(gemini, tmp_path):
+    """
+    Regression guard: an instruction was measured to change nothing for this
+    transcription-only model, so the request carries audio and nothing else.
+    """
+    wav = _write_loud_wav(tmp_path)
+    with patch.object(gemini, "urlopen", side_effect=[_ok("текст")]) as mock:
+        gemini.Transcriber().transcribe_wav_sync(wav, language="ru")
+    body = json.loads(mock.call_args_list[0].args[0].data.decode())
+    assert [part["type"] for part in body["input"]] == ["audio"]
+    assert "text" not in json.dumps(body["input"])
 
 
 

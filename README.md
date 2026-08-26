@@ -166,18 +166,22 @@ The translate path (right ⌥) does Voxtral transcription → LLM translation �
 
 The `gemini` backend uses Gemini 3.5 Transcribe through Google's Interactions API
 (`POST /v1beta/interactions`), not the `generateContent` endpoint the rest of Gemini
-uses — that endpoint accepts the request for this model and returns an empty result.
-Translation stays on Mistral regardless of the STT backend, so `MISTRAL_API_KEY` is
-still required alongside the Gemini keys.
+uses. That endpoint accepts the request for this model and returns an empty result.
+The request carries the audio and nothing else: this model only transcribes, and a
+text instruction was measured to change nothing, so none is sent. Translation stays
+on Mistral regardless of the STT backend, so `MISTRAL_API_KEY` is still required
+alongside the Gemini keys.
 
 Measured on this host it transcribes Russian media-buying jargon noticeably better
-than Voxtral, but takes about 3 s against Voxtral's 0.5 s. The free tier allows only
-**3 requests per minute per project**, so list several keys in `GEMINI_API_KEYS`: each
-request takes the first key with quota left, giving 9 dictations per minute across
-three keys. A key that returns HTTP 429 is abandoned immediately rather than retried,
-and its window is marked spent so later requests skip it. When every key is exhausted
-the transcription fails fast and the recording stays in `.pending/` for recovery on
-the next start — no audio is lost.
+than Voxtral, but takes about 3 s against Voxtral's 0.5 s. That cost is fixed
+overhead rather than processing time (2 s of audio takes 3.3 s, 8.6 s takes 3.6 s),
+so shorter recordings do not help. The free tier allows only **3 requests per minute
+per project**, so list several keys in `GEMINI_API_KEYS`: each request takes the
+first key with quota left, giving 9 dictations per minute across three keys. A key
+that returns HTTP 429 is abandoned immediately rather than retried, and its window is
+marked spent so later requests skip it. When every key is exhausted the transcription
+fails fast and the recording stays in `.pending/` for recovery on the next start, so
+no audio is lost.
 
 After editing, reload the agent (`launchctl unload ... && launchctl load ...`).
 
