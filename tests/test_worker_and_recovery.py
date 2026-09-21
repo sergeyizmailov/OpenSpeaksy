@@ -70,7 +70,7 @@ def test_a_rejected_recording_is_quarantined_not_retried_forever(
         main.transcriber,
         "transcribe_and_correct_sync",
         lambda *a, **k: (_ for _ in ()).throw(
-            RequestRejectedError("recording is too large for inline Gemini upload")
+            RequestRejectedError("recording is too large for Mistral upload")
         ),
     )
 
@@ -343,7 +343,7 @@ def test_processing_error_message_carries_the_providers_wait(worker, monkeypatch
         lambda *a, **k: (_ for _ in ()).throw(
             TranscriptionError(
                 "HTTP Error 429: Too Many Requests: Quota exceeded for metric: "
-                "generate_content_free_tier_requests, limit: 25. "
+                "mistral_requests, limit: 25. "
                 "Please retry in 34.5s."
             )
         ),

@@ -16,19 +16,17 @@
     <key>EnvironmentVariables</key>
     <dict>
         <key>OPENSPEAKSY_STT_BACKEND</key>
-        <string>gemini</string>
+        <string>mistral</string>
         <key>MISTRAL_API_KEY</key>
         <string>__MISTRAL_API_KEY__</string>
         <key>MISTRAL_MODEL</key>
         <string>voxtral-mini-2602</string>
         <key>MISTRAL_TRANSLATION_MODEL</key>
-        <string>mistral-medium-3-5</string>
+        <string>ministral-8b-latest</string>
         <key>OPENSPEAKSY_DICTATE_LANGUAGE</key>
         <string></string>
         <key>OPENSPEAKSY_POLISH_STT_BACKEND</key>
-        <string>gemini</string>
-        <key>GEMINI_API_KEYS</key>
-        <string>__GEMINI_API_KEYS__</string>
+        <string>mistral</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

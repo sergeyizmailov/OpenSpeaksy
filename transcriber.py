@@ -1,14 +1,11 @@
-import base64
 import errno
 import http.client
 import json
 import logging
 import os
-import re
 import socket
 import ssl
 import struct
-import threading
 import time
 import uuid
 import wave
@@ -30,6 +27,16 @@ REQUEST_MAX_ATTEMPTS = 3
 # worst case per call drops from ~95 s to ~62 s when the network is dead.
 CONNECT_MAX_ATTEMPTS = 2
 RETRY_DELAYS_SEC = (0.5, 1.5)
+# Mistral answers a capacity shortage with HTTP 429 code 3505
+# ("backend_out_of_capacity"), which is NOT this account's quota: it is the
+# provider being momentarily full, and it arrives in bursts lasting tens of
+# seconds. Measured 2026-09-22: 8 of 12 consecutive transcriptions refused,
+# then 20 of 20 accepted minutes later. The default two-step ladder gives up
+# after ~2 s and loses the recording, so capacity refusals get a longer,
+# wider-spaced ladder. Quota refusals (code 1300) are deliberately excluded —
+# waiting does not earn back a quota that is already spent.
+CAPACITY_RETRY_DELAYS_SEC = (2.0, 5.0, 10.0, 15.0)
+CAPACITY_MAX_ATTEMPTS = 5
 
 _CONNECT_FAILURE_ERRNOS = frozenset({
     errno.ENETDOWN,
@@ -42,8 +49,11 @@ _CONNECT_FAILURE_ERRNOS = frozenset({
 })
 RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 SILENCE_RMS_THRESHOLD = 0.001
-STT_BACKEND = os.environ.get("OPENSPEAKSY_STT_BACKEND", "gemini").strip().lower()
-SUPPORTED_STT_BACKENDS = {"mistral", "gemini"}
+# Mistral is the only STT/translation provider. The env var is kept so an
+# explicit override is still validated rather than silently ignored, but it
+# can only ever resolve to "mistral" now.
+STT_BACKEND = os.environ.get("OPENSPEAKSY_STT_BACKEND", "mistral").strip().lower()
+SUPPORTED_STT_BACKENDS = {"mistral"}
 DICTATE_LANGUAGE = os.environ.get("OPENSPEAKSY_DICTATE_LANGUAGE", "").strip() or None
 POLISH_STT_BACKEND = (
     os.environ.get("OPENSPEAKSY_POLISH_STT_BACKEND", STT_BACKEND).strip().lower()
@@ -55,7 +65,7 @@ MISTRAL_ENDPOINT = "https://api.mistral.ai/v1/audio/transcriptions"
 MISTRAL_CHAT_ENDPOINT = "https://api.mistral.ai/v1/chat/completions"
 MISTRAL_MODEL = os.environ.get("MISTRAL_MODEL", "voxtral-mini-2602")
 MISTRAL_TRANSLATION_MODEL = os.environ.get(
-    "MISTRAL_TRANSLATION_MODEL", "mistral-medium-3-5"
+    "MISTRAL_TRANSLATION_MODEL", "ministral-8b-latest"
 )
 
 # Post-transcription correction pass for dictation. Voxtral returns a fast but
@@ -71,7 +81,7 @@ CORRECT_DICTATION = os.environ.get(
     "OPENSPEAKSY_CORRECT_DICTATION", "0"
 ).strip().lower() in {"1", "true", "yes", "on"}
 MISTRAL_CORRECTION_MODEL = os.environ.get(
-    "MISTRAL_CORRECTION_MODEL", "mistral-medium-3-5"
+    "MISTRAL_CORRECTION_MODEL", "ministral-8b-latest"
 )
 # Measured on a 204 s recording: at 0.2 the model inverted "это очень дорого"
 # into "это очень дешево" in 2 of 8 runs, and at 0.0 in 0 of 7. Rewording still
@@ -93,62 +103,6 @@ CORRECTION_MIN_CHARS = int(os.environ.get("OPENSPEAKSY_CORRECTION_MIN_CHARS", "4
 CORRECTION_MAX_GROWTH = 0.60
 CORRECTION_MAX_SHRINK = 0.50
 
-# Optional speech-to-text backend. Gemini 3.5 Transcribe (released 2026-08-26)
-# is a dedicated transcription model reached through the Interactions API, NOT
-# the generateContent endpoint the rest of Gemini uses: generateContent accepts
-# the request and returns an empty part for this model. The transcript arrives
-# in steps[].content[].text rather than a top-level text field.
-# Multiple keys are supported because the per-minute quota is enforced per
-# project: each key carries its own allowance, so N keys multiply the ceiling.
-# GEMINI_API_KEYS takes a comma-separated list; GEMINI_API_KEY remains valid for
-# a single key and is appended to whatever the list holds.
-GEMINI_API_KEYS = [
-    key
-    for key in (
-        k.strip()
-        for k in (
-            os.environ.get("GEMINI_API_KEYS", "").split(",")
-            + [os.environ.get("GEMINI_API_KEY", "")]
-        )
-    )
-    if key
-]
-# Deduplicate while preserving order — a key listed twice would get double quota
-# credit it does not have.
-GEMINI_API_KEYS = list(dict.fromkeys(GEMINI_API_KEYS))
-GEMINI_API_KEY = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
-GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/interactions"
-GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-transcribe")
-# Inline audio is capped at 20 MB per request including the base64 overhead,
-# which inflates the payload by a third. 14 MB of 16 kHz mono WAV is about
-# 7.6 minutes of speech. Past that this backend cannot take the recording at
-# all — the watchdog's RECORDING_TIMEOUT_SEC is an hour, a memory guard rather
-# than a transcription guarantee — so an over-long recording is rejected here,
-# reported to the user, and quarantined by the caller instead of being retried
-# forever. Lifting the ceiling means uploading through the Files API.
-GEMINI_MAX_INLINE_BYTES = 14 * 1024 * 1024
-# The free tier enforces at least TWO caps under one metric name: 3 requests per
-# minute, and a second cap reported as "limit: 25" over a longer window. Counting
-# our own requests can only model the first, so a key is ALSO put on cooldown for
-# as long as the provider's own "retry in Ns" hint says. That covers any cap
-# Google enforces, including ones not mapped here.
-GEMINI_REQUESTS_PER_WINDOW = int(
-    os.environ.get("OPENSPEAKSY_GEMINI_RPM", "3")
-)
-GEMINI_WINDOW_SEC = 60.0
-# Fallback cooldown when a 429 carries no parsable retry hint.
-GEMINI_DEFAULT_COOLDOWN_SEC = 40.0
-# A provider hint far beyond this is a daily/quota-level block, not a burst
-# limit; cap the cooldown so one bad reading cannot sideline a key for hours.
-GEMINI_MAX_COOLDOWN_SEC = 300.0
-# When every key is throttled, a slower transcript beats no paste at all. Voxtral
-# has no comparable per-minute ceiling. Set to an empty string to disable and let
-# the dictation fail instead (the audio still waits in .pending either way).
-GEMINI_EXHAUSTED_BACKEND = os.environ.get(
-    "OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND", "mistral"
-).strip().lower()
-
-
 # Enough of an error body to hold a provider's explanation without letting a
 # hostile or broken endpoint push an unbounded string into the log and the UI.
 HTTP_BODY_READ_LIMIT = 4096
@@ -165,9 +119,23 @@ def _http_error_text(error):
     be read before the handle is closed.
     """
     base = f"HTTP Error {error.code}: {error.reason}"
-    try:
-        raw = error.read(HTTP_BODY_READ_LIMIT).decode("utf-8", "replace")
-    except Exception:
+    # The body stream is one-shot, and more than one caller needs it now (the
+    # capacity detector reads it before this text reaches the log). Cache the
+    # first read on the error so later calls see the same body, not an empty
+    # one.
+    cached = getattr(error, "_openspeaksy_body", None)
+    if cached is not None:
+        raw = cached
+    else:
+        try:
+            raw = error.read(HTTP_BODY_READ_LIMIT).decode("utf-8", "replace")
+        except Exception:
+            raw = ""
+        try:
+            error._openspeaksy_body = raw
+        except Exception:
+            pass
+    if not raw:
         return base
     detail = " ".join(raw.split())
     if not detail:
@@ -191,8 +159,8 @@ def _http_error_text(error):
 def _provider_error(error, detail):
     """
     Wrap a transport or HTTP failure in the exception the callers understand,
-    carrying the response headers along. _retry_after_seconds reads them off
-    the raised error, so dropping them here loses the provider's Retry-After.
+    carrying the response headers along. _retry_delay reads Retry-After off the
+    raised error, so dropping the headers here loses the provider's own hint.
     """
     cls = ProviderUnavailableError if _is_connect_failure(error) else TranscriptionError
     wrapped = cls(detail)
@@ -200,121 +168,6 @@ def _provider_error(error, detail):
     wrapped.code = getattr(error, "code", None)
     return wrapped
 
-
-def _retry_after_seconds(error):
-    """
-    Seconds the provider asked us to wait, from a Retry-After header or the
-    "Please retry in 34.5s" text Gemini puts in the 429 body. None when absent.
-    """
-    headers = getattr(error, "headers", None)
-    if headers:
-        raw = headers.get("Retry-After")
-        if raw:
-            try:
-                return max(0.0, float(raw))
-            except (TypeError, ValueError):
-                pass
-    match = re.search(r"retry in ([\d.]+)\s*s", str(error), re.IGNORECASE)
-    if match:
-        try:
-            return max(0.0, float(match.group(1)))
-        except ValueError:
-            pass
-    return None
-
-
-class _SlidingWindowQuota:
-    """
-    Tracks provider calls in a sliding window so a burst can be routed to
-    another key before it is rejected. Only successfully started requests are
-    counted, so a skipped call does not consume quota it never used.
-    """
-
-    def __init__(self, limit, window_sec):
-        self._limit = limit
-        self._window = window_sec
-        # (reserved_at, token) pairs; the token makes release() precise.
-        self._hits = []
-        self._counter = 0
-        # Honors the provider's own retry hint, which can outlast the window.
-        self._blocked_until = 0.0
-        self._lock = threading.Lock()
-
-    def _prune(self, now):
-        cutoff = now - self._window
-        self._hits = [hit for hit in self._hits if hit[0] > cutoff]
-
-    def try_acquire(self):
-        """
-        Reserve a slot, returning a token to release it with, or None when the
-        window is full. The token identifies this caller's own reservation —
-        the retry loop and the recovery thread can be in flight at once, so
-        releasing "the newest" would free a slot another live request is using.
-        """
-        if self._limit <= 0:
-            return None
-        now = time.monotonic()
-        with self._lock:
-            if now < self._blocked_until:
-                return None
-            self._prune(now)
-            if len(self._hits) >= self._limit:
-                return None
-            self._counter += 1
-            token = self._counter
-            self._hits.append((now, token))
-            return token
-
-    def release(self, token):
-        """
-        Give back this caller's reservation. Used when the request never
-        reached the provider, so a dead network does not burn the key's quota.
-        """
-        with self._lock:
-            self._hits = [hit for hit in self._hits if hit[1] != token]
-
-    def penalize(self, cooldown_sec=None):
-        """
-        Shut this key down after the provider itself reported throttling. Fills
-        the request window AND, when the provider said how long to wait, holds
-        the key closed for that long. The wait matters because the free tier has
-        a second cap our request counting cannot see: without it, the counter
-        frees up after 60 s and we resume hammering a key Google still refuses.
-        """
-        now = time.monotonic()
-        with self._lock:
-            self._prune(now)
-            while len(self._hits) < self._limit:
-                self._counter += 1
-                self._hits.append((now, self._counter))
-            if cooldown_sec:
-                self._blocked_until = max(
-                    self._blocked_until, now + min(cooldown_sec, GEMINI_MAX_COOLDOWN_SEC)
-                )
-
-    def cooling_down_for(self):
-        """
-        Seconds until this key is usable again, 0.0 when it is usable now.
-        Covers BOTH reasons a key can be closed: a provider cooldown, and a
-        request window that is simply full. Reporting 0.0 for the second case
-        made the "all keys are rate-limited" message unable to say when.
-        """
-        now = time.monotonic()
-        with self._lock:
-            wait = self._blocked_until - now
-            self._prune(now)
-            if self._limit > 0 and len(self._hits) >= self._limit:
-                # The oldest reservation has to age out of the window before a
-                # slot exists, cooldown or not.
-                wait = max(wait, self._hits[0][0] + self._window - now)
-            return max(0.0, wait)
-
-
-# One independent quota per key, in the same order as GEMINI_API_KEYS.
-_gemini_quotas = [
-    _SlidingWindowQuota(GEMINI_REQUESTS_PER_WINDOW, GEMINI_WINDOW_SEC)
-    for _ in GEMINI_API_KEYS
-]
 
 # Temperature 0.0 produces stiff, word-by-word output for conversational speech.
 # A small bump trades a bit of determinism for noticeably more natural phrasing.
@@ -465,6 +318,24 @@ def _is_connect_failure(error):
     return isinstance(reason, OSError) and reason.errno in _CONNECT_FAILURE_ERRNOS
 
 
+def _is_capacity_shortage(error):
+    """
+    True for a provider-side capacity refusal rather than a spent quota.
+
+    Mistral returns both as HTTP 429, so the body is what separates them:
+    code 3505 / "backend_out_of_capacity" means retry later, while code 1300 /
+    "rate_limited" means this account's own allowance is gone.
+    """
+    if isinstance(error, HTTPError):
+        # str(HTTPError) stops at the status line, so the discriminating body
+        # is only reachable through the reader that caches it.
+        text = _http_error_text(error).lower()
+    else:
+        text = str(error).lower()
+    compact = text.replace(" ", "")
+    return "backend_out_of_capacity" in compact or '"code":"3505"' in compact
+
+
 def _retry_delay(error, attempt):
     """Return the retry delay for a transient provider error, or None."""
     if isinstance(error, HTTPError):
@@ -494,6 +365,10 @@ def _retry_delay(error, attempt):
     ):
         return None
 
+    if isinstance(error, HTTPError) and _is_capacity_shortage(error):
+        ladder = CAPACITY_RETRY_DELAYS_SEC
+        return ladder[min(attempt - 1, len(ladder) - 1)]
+
     return RETRY_DELAYS_SEC[min(attempt - 1, len(RETRY_DELAYS_SEC) - 1)]
 
 
@@ -506,23 +381,31 @@ def _request_json(request, label, validate=None, retry_throttling=True):
     Set retry_throttling=False when the caller has somewhere better to go on a
     429 — rotating to another API key beats waiting out this one's window.
     """
-    for attempt in range(1, REQUEST_MAX_ATTEMPTS + 1):
+    # The loop bound is the widest ladder any error class can ask for; each
+    # class then stops at its own max_attempts below.
+    for attempt in range(1, max(REQUEST_MAX_ATTEMPTS, CAPACITY_MAX_ATTEMPTS) + 1):
         response = None
         try:
             response = urlopen(request, timeout=REQUEST_TIMEOUT_SEC)
             result = json.loads(response.read().decode())
             return validate(result) if validate is not None else result
         except Exception as error:
-            max_attempts = (
-                CONNECT_MAX_ATTEMPTS
-                if _is_connect_failure(error)
-                else REQUEST_MAX_ATTEMPTS
-            )
+            capacity = isinstance(error, HTTPError) and _is_capacity_shortage(error)
+            if _is_connect_failure(error):
+                max_attempts = CONNECT_MAX_ATTEMPTS
+            elif capacity:
+                max_attempts = CAPACITY_MAX_ATTEMPTS
+            else:
+                max_attempts = REQUEST_MAX_ATTEMPTS
             delay = _retry_delay(error, attempt)
             if (
                 not retry_throttling
                 and isinstance(error, HTTPError)
                 and error.code == 429
+                # retry_throttling=False means "this key's allowance is gone,
+                # go elsewhere". A capacity refusal is the provider being full,
+                # and there is nowhere else to go, so it still waits.
+                and not capacity
             ):
                 delay = None
             detail = str(error)
@@ -560,64 +443,6 @@ def _transcription_text(result, wav_path):
             "transcription response has no text field"
         )
     text = text.strip()
-    if not text and wav_rms(wav_path) > SILENCE_RMS_THRESHOLD:
-        raise _RetryableProviderResponseError(
-            "provider returned an empty transcript for non-silent audio"
-        )
-    return text
-
-
-def _is_rate_limited(error):
-    """True when a failure looks like provider throttling rather than a bug."""
-    return "429" in str(error) or "too many requests" in str(error).lower()
-
-
-# A 400 or 413 is a verdict on the payload, not on the credential, so every key
-# reproduces it. Anything raised as RequestRejectedError is the same story.
-_KEY_INDEPENDENT_HTTP_CODES = (400, 413)
-
-
-def _is_key_independent_failure(error):
-    """
-    True when retrying the identical request under a different key is pointless.
-    Walking the whole list then would spend every key's quota to collect the
-    same error once per key.
-    """
-    if isinstance(error, RequestRejectedError):
-        return True
-    text = str(error)
-    return any(f"HTTP Error {code}" in text for code in _KEY_INDEPENDENT_HTTP_CODES)
-
-
-def _gemini_transcription_text(result, wav_path):
-    """
-    Pull the transcript out of an Interactions API response. The text is nested
-    in the model_output step rather than a top-level field, and a completed
-    response with no text at all means the model declined the audio.
-    """
-    if not isinstance(result, dict):
-        raise _RetryableProviderResponseError("Gemini response is not an object")
-    # A completed interaction with no steps at all is how this model reports
-    # "no speech here". It is a verdict on the audio, not a glitch, so it must
-    # not reach the retry path at all: three attempts on this key plus a walk
-    # through every other key spends up to nine free-tier requests to be told
-    # the same thing. Deliberately NOT gated on RMS — a microphone recording
-    # room noise or music clears the silence threshold easily.
-    steps = result.get("steps")
-    if result.get("status") == "completed" and steps in (None, []):
-        return ""
-    if not isinstance(steps, list):
-        raise _RetryableProviderResponseError("Gemini response has no steps")
-    chunks = [
-        part["text"]
-        for step in steps
-        if isinstance(step, dict) and step.get("type") == "model_output"
-        for part in (step.get("content") or [])
-        if isinstance(part, dict)
-        and part.get("type") == "text"
-        and isinstance(part.get("text"), str)
-    ]
-    text = " ".join(chunk.strip() for chunk in chunks if chunk.strip()).strip()
     if not text and wav_rms(wav_path) > SILENCE_RMS_THRESHOLD:
         raise _RetryableProviderResponseError(
             "provider returned an empty transcript for non-silent audio"
@@ -756,93 +581,11 @@ class Transcriber:
     def _transcribe_with(self, backend, wav_path, language=None):
         if backend == "mistral":
             return self._transcribe_mistral(wav_path, language=language)
-        if backend == "gemini":
-            return self._transcribe_gemini(wav_path, language=language)
         raise TranscriptionError(f"unsupported STT backend: {backend}")
-
-    def _transcribe_gemini_rotating(self, wav_path, language=None):
-        """
-        Try each configured key in turn. The per-minute quota is metered per
-        project, so a key that is spent or throttled is skipped and the next one
-        serves the request. Only when every key is exhausted does this fail —
-        and then the recording stays in .pending for recovery rather than being
-        lost.
-        """
-        if not GEMINI_API_KEYS:
-            raise TranscriptionError("Gemini API key is not configured")
-
-        # Prefer a diagnostic error over a routine one when several keys fail:
-        # a 429 from the last key would otherwise hide a real defect hit on the
-        # first, since only the raised exception reaches the caller and the log.
-        last_error = None
-        routine_error = None
-        for index, (key, quota) in enumerate(zip(GEMINI_API_KEYS, _gemini_quotas)):
-            token = quota.try_acquire()
-            if token is None:
-                continue
-            try:
-                text = self._transcribe_gemini(wav_path, language=language, api_key=key)
-                if index:
-                    logger.info(f"Gemini key {index + 1} served this transcription")
-                return text
-            except ProviderUnavailableError as e:
-                # The request never reached Google, so it consumed no quota.
-                quota.release(token)
-                last_error = last_error or e
-                logger.warning(f"Gemini key {index + 1} unreachable: {e}")
-            except TranscriptionError as e:
-                if isinstance(e, RequestRejectedError):
-                    # Our own guard rejected the payload before any HTTP call,
-                    # so this key's minute must not pay for a request that
-                    # never happened.
-                    quota.release(token)
-                if _is_rate_limited(e):
-                    # Google's accounting disagrees with ours; trust Google's,
-                    # including how long it wants us to stay away.
-                    wait = _retry_after_seconds(e) or GEMINI_DEFAULT_COOLDOWN_SEC
-                    quota.penalize(cooldown_sec=wait)
-                    logger.info(
-                        f"Gemini key {index + 1} on cooldown for {wait:.0f}s"
-                    )
-                    routine_error = routine_error or e
-                else:
-                    last_error = last_error or e
-                logger.warning(f"Gemini key {index + 1} failed: {e}")
-                if _is_key_independent_failure(e):
-                    # The payload is the problem, not the key. Fail now instead
-                    # of spending the remaining keys' quota on the same error.
-                    raise
-
-        # A real defect must surface: it needs fixing, not papering over.
-        if last_error is not None:
-            raise last_error
-
-        # Pure throttling, whether we predicted it or the provider told us, is
-        # exactly what the fallback exists for.
-        soonest = min(
-            (quota.cooling_down_for() for quota in _gemini_quotas), default=0.0
-        )
-        detail = f"; next one frees up in {soonest:.0f}s" if soonest else ""
-        blocked = (
-            f"all {len(GEMINI_API_KEYS)} Gemini key(s) are rate-limited{detail}"
-        )
-        if GEMINI_EXHAUSTED_BACKEND and GEMINI_EXHAUSTED_BACKEND != "gemini":
-            logger.warning(f"{blocked}; falling back to {GEMINI_EXHAUSTED_BACKEND}")
-            return self._transcribe_with(
-                GEMINI_EXHAUSTED_BACKEND, wav_path, language=language
-            )
-        if routine_error is not None:
-            raise routine_error
-        raise TranscriptionError(blocked)
 
     def transcribe_wav_sync(self, wav_path, language=None, backend=None):
         selected_backend = backend or STT_BACKEND
-        if selected_backend == "gemini":
-            text = self._transcribe_gemini_rotating(wav_path, language=language)
-        else:
-            text = self._transcribe_with(
-                selected_backend, wav_path, language=language
-            )
+        text = self._transcribe_with(selected_backend, wav_path, language=language)
 
         # A phrase blocklist alone would silently discard legitimate dictation
         # such as "Thank you". Filter known model artifacts only when the WAV
@@ -948,54 +691,6 @@ class Transcriber:
             validate=lambda result: _transcription_text(result, wav_path),
         )
 
-    def _transcribe_gemini(self, wav_path, language=None, api_key=None):
-        key = api_key or GEMINI_API_KEY
-        if not key:
-            raise TranscriptionError("Gemini API key is not configured")
-
-        # Sized before reading: a rejected recording must not be pulled into
-        # memory in full just to be turned down.
-        size = os.path.getsize(wav_path)
-        if size > GEMINI_MAX_INLINE_BYTES:
-            raise RequestRejectedError(
-                f"recording is too large for inline Gemini upload: {size} bytes"
-            )
-        with open(wav_path, "rb") as f:
-            wav_data = f.read()
-
-        # Audio alone, with no text part. This model does nothing but
-        # transcribe, so an instruction is dead weight: measured on real audio,
-        # a bare request and a prompted one returned byte-identical transcripts,
-        # and the language hint changed nothing either (the model detects it).
-        # `language` is accepted for interface parity with the other backends.
-        payload = json.dumps({
-            "model": GEMINI_MODEL,
-            "input": [
-                {
-                    "type": "audio",
-                    "mime_type": "audio/wav",
-                    "data": base64.b64encode(wav_data).decode(),
-                },
-            ],
-        }).encode()
-
-        req = Request(
-            GEMINI_ENDPOINT,
-            data=payload,
-            headers={
-                "Content-Type": "application/json",
-                "x-goog-api-key": key,
-                "User-Agent": "openspeaksy/1.0",
-            },
-        )
-        return _request_json(
-            req,
-            "Gemini transcription",
-            validate=lambda result: _gemini_transcription_text(result, wav_path),
-            # A throttled key is a reason to try the next key, not to wait.
-            retry_throttling=False,
-        )
-
     def _translate_mistral(self, russian_text):
         return self._chat_completion(TRANSLATION_SYSTEM_PROMPT, russian_text, label="translate")
 
@@ -1024,4 +719,9 @@ class Transcriber:
                 "User-Agent": "openspeaksy/1.0",
             },
         )
-        return _request_json(req, f"Mistral {label}", validate=_chat_text)
+        # A 429 here is the account's own limit on a single key with nowhere
+        # to rotate to, so the three local attempts only stretch the failure
+        # and add load to the endpoint that just refused. Fail fast instead.
+        return _request_json(
+            req, f"Mistral {label}", validate=_chat_text, retry_throttling=False
+        )

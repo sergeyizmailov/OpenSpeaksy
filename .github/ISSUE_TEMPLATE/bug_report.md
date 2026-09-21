@@ -23,7 +23,7 @@ labels: bug
 
 - macOS version:
 - Mac model (M1 / M2 / M3 / Intel):
-- STT backend/model: <!-- for example gemini / gemini-3.5-transcribe -->
+- STT model: <!-- for example voxtral-mini-2602 -->
 - Python version: <!-- output of `venv/bin/python --version` -->
 
 ## Logs

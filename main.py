@@ -33,9 +33,6 @@ from recorder import Recorder
 from transcriber import (
     CORRECT_DICTATION,
     DICTATE_LANGUAGE,
-    GEMINI_API_KEYS,
-    GEMINI_MODEL,
-    GEMINI_REQUESTS_PER_WINDOW,
     MISTRAL_API_KEY,
     MISTRAL_CORRECTION_MODEL,
     MISTRAL_MODEL,
@@ -81,8 +78,8 @@ QUARANTINE_DIR = PENDING_DIR / "quarantine"
 # right-side modifier as released, which would cut off valid dictation.
 RECORDING_TIMEOUT_SEC = 3600
 # Translation makes two provider calls (STT, translate), each with bounded
-# retries, and STT may walk several Gemini keys. Keep the watchdog above that
-# legitimate retry budget so it never invalidates a worker still making progress.
+# retries. Keep the watchdog above that legitimate retry budget so it never
+# invalidates a worker still making progress.
 PROCESSING_TIMEOUT_SEC = 360
 WATCHDOG_POLL_SEC = 5
 # How long a shutdown waits for an in-flight recording to reach disk. Only a
@@ -91,6 +88,20 @@ SHUTDOWN_SAVE_WAIT_SEC = 2.0
 
 # Long-term observability
 PENDING_AGE_WARN_DAYS = 7
+
+# Unattended disk hygiene. A recording that no longer transcribes is not worth
+# keeping forever: it is retried every PENDING_RETRY_POLL_SEC, and each attempt
+# spends a rate-limit slot that live dictation needs. Two independent limits,
+# because the two failure shapes differ:
+#   - a file the provider keeps refusing gets set aside after N consecutive
+#     recovery failures, so a single poison recording stops costing requests;
+#   - anything still pending after N days is deleted outright, which is the
+#     backstop for a long provider outage that ends with the audio too old to
+#     be worth pasting anyway.
+# Quarantined files are NEVER auto-deleted — a human decides, since that
+# directory is the only copy of audio the app could not transcribe.
+PENDING_MAX_FAILURES = 5
+PENDING_MAX_AGE_DAYS = 14
 
 
 # Bounded log file: 2 MB × 3 files = 6 MB max ever on disk
@@ -522,6 +533,64 @@ def delete_pending_recording(path):
         log(f"delete pending recording error {path.name}: {e}")
 
 
+# Consecutive recovery failures per pending file, keyed by name. In memory
+# only: a restart re-arms every file, which is deliberate — a fresh process may
+# be running against a fixed config, so it deserves a clean set of attempts.
+_pending_failures = {}
+_pending_failures_lock = threading.Lock()
+
+
+def _note_pending_failure(path):
+    """Count one failed recovery attempt; True once the file is past the cap."""
+    with _pending_failures_lock:
+        count = _pending_failures.get(path.name, 0) + 1
+        _pending_failures[path.name] = count
+    return count >= PENDING_MAX_FAILURES
+
+
+def _clear_pending_failures(name):
+    with _pending_failures_lock:
+        _pending_failures.pop(name, None)
+
+
+def purge_expired_pending(paths):
+    """
+    Delete pending recordings past PENDING_MAX_AGE_DAYS.
+
+    The audio is the only copy, so this is the one place the app discards a
+    recording the user never saw. It runs before transcription so an expired
+    file is not first retried and then deleted in the same pass.
+    Returns the paths that survived.
+    """
+    cutoff = time.time() - PENDING_MAX_AGE_DAYS * 86400
+    kept = []
+    expired = 0
+    for path in paths:
+        try:
+            too_old = path.stat().st_mtime < cutoff
+        except OSError:
+            kept.append(path)
+            continue
+        if not too_old:
+            kept.append(path)
+            continue
+        try:
+            path.unlink()
+            _clear_pending_failures(path.name)
+            expired += 1
+        except FileNotFoundError:
+            expired += 1
+        except OSError as e:
+            log(f"purge error {path.name}: {e}")
+            kept.append(path)
+    if expired:
+        log(
+            f"purged {expired} pending recording(s) older than "
+            f"{PENDING_MAX_AGE_DAYS}d"
+        )
+    return kept
+
+
 def quarantine_path(path, reason):
     quarantine_dir = (
         QUARANTINE_DIR
@@ -686,6 +755,10 @@ def recover_pending_recordings():
     if not paths:
         return
 
+    paths = purge_expired_pending(paths)
+    if not paths:
+        return
+
     cutoff = time.time() - PENDING_AGE_WARN_DAYS * 86400
     stale = sum(1 for p in paths if p.stat().st_mtime < cutoff)
     if stale:
@@ -726,10 +799,19 @@ def recover_pending_recordings():
         except Exception as e:
             # A file-specific problem (e.g. the provider persistently returns
             # an empty transcript for this audio). Skip it so one poison file
-            # can't block recovery of every other recording.
-            log(f"recovery skipping {path.name}: {e}")
+            # can't block recovery of every other recording. After
+            # PENDING_MAX_FAILURES consecutive failures, stop paying for it:
+            # set it aside so it no longer spends a request every poll.
+            if _note_pending_failure(path):
+                quarantine_path(
+                    path, f"{PENDING_MAX_FAILURES} consecutive failures: {e}"
+                )
+                _clear_pending_failures(path.name)
+            else:
+                log(f"recovery skipping {path.name}: {e}")
             skipped += 1
             continue
+        _clear_pending_failures(path.name)
         recovered.append((path, text))
 
     non_empty = [(p, t) for p, t in recovered if t]
@@ -957,20 +1039,10 @@ def configuration_error():
             f"unsupported Polish STT backend {POLISH_STT_BACKEND!r}; "
             f"expected one of {sorted(SUPPORTED_STT_BACKENDS)}"
         )
-    if "gemini" in {STT_BACKEND, POLISH_STT_BACKEND} and not GEMINI_API_KEYS:
-        return (
-            "no Gemini API key configured. Set GEMINI_API_KEYS (comma-"
-            f"separated) or GEMINI_API_KEY in {PLIST_HINT}"
-        )
-    if "mistral" in {STT_BACKEND, POLISH_STT_BACKEND} and not MISTRAL_API_KEY:
-        return (
-            "STT backend is Mistral but no Mistral API key is configured. "
-            f"Set MISTRAL_API_KEY in {PLIST_HINT}"
-        )
     if not MISTRAL_API_KEY:
         return (
-            "no Mistral API key configured; the translate hotkeys require it. "
-            f"Set MISTRAL_API_KEY in {PLIST_HINT}"
+            "no Mistral API key configured; both transcription and the "
+            f"translate hotkeys require it. Set MISTRAL_API_KEY in {PLIST_HINT}"
         )
     return None
 
@@ -995,15 +1067,7 @@ def main():
         return
 
     translator = f"Mistral {MISTRAL_TRANSLATION_MODEL}"
-    if STT_BACKEND == "mistral":
-        stt = f"Mistral {MISTRAL_MODEL}"
-    elif STT_BACKEND == "gemini":
-        stt = (
-            f"Gemini {GEMINI_MODEL} ({len(GEMINI_API_KEYS)} key(s), "
-            f"{GEMINI_REQUESTS_PER_WINDOW}/min each)"
-        )
-    else:
-        stt = STT_BACKEND
+    stt = f"Mistral {MISTRAL_MODEL}"
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
         f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "

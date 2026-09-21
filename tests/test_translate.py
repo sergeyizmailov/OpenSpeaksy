@@ -106,7 +106,7 @@ def test_translate_mistral_posts_chat_completions(transcriber_module):
     assert captured["url"] == "https://api.mistral.ai/v1/chat/completions"
     assert captured["ct"] == "application/json"
     assert captured["authorization"] == "Bearer mistral-test-key"
-    assert captured["body"]["model"] == "mistral-medium-3-5"
+    assert captured["body"]["model"] == t.MISTRAL_TRANSLATION_MODEL
     # Bumped from 0.0 for more natural phrasing on conversational speech.
     assert captured["body"]["temperature"] == 0.2
     msgs = captured["body"]["messages"]

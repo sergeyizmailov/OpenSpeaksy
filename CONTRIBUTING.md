@@ -7,7 +7,7 @@ focused on macOS dictation — please read this before opening a PR.
 
 - macOS reliability and UX improvements
 - New hotkey / overlay options
-- Gemini/Mistral integration tweaks (rate-limit handling, model parameters)
+- Mistral integration tweaks (rate-limit handling, model parameters)
 - Documentation, install-script fixes, packaging
 - Bug fixes with a clear repro
 
@@ -43,12 +43,12 @@ Short imperative subject, then a paragraph explaining *why*. Bullet list of
 changes if helpful. Example:
 
 ```
-Stop an oversized recording from draining every Gemini key
+Stop an oversized recording from being retried forever
 
-The local size guard raised a plain TranscriptionError, so the key rotation
-did not recognize it as a verdict on the payload and walked all three keys to
-collect the same error once per key. Raising a distinct type keeps the guard
-and the check from drifting apart again.
+The local size guard raised a plain TranscriptionError, so the retry loop
+did not recognize it as a verdict on the payload and kept resending the same
+file every 5 minutes. Raising a distinct type lets the caller quarantine it
+instead of retrying a request the provider will always refuse.
 ```
 
 ## Reporting bugs
@@ -56,7 +56,7 @@ and the check from drifting apart again.
 Open an issue with:
 
 - macOS version + Apple Silicon / Intel
-- STT backend and model (`gemini` / `gemini-3.5-transcribe` by default)
+- STT model (`voxtral-mini-2602` by default)
 - Reproduction steps
 - Relevant lines from `~/Library/Logs/com.openspeaksy/main.log`
 

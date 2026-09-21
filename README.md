@@ -3,13 +3,13 @@
 # OpenSpeaksy
 
 **Lightweight, private voice dictation and translation for macOS.**  
-Powered by Gemini 3.5 Transcribe & Mistral Medium 3.5.
+Powered by Mistral.
 
 [![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-lightgrey.svg)]()
-[![Backend: Gemini](https://img.shields.io/badge/STT-Gemini%203.5%20Transcribe-black.svg)](https://blog.google/innovation-and-ai/models-and-research/gemini-models/gemini-3-5-transcribe/)
-[![Translation: Mistral](https://img.shields.io/badge/Translate-Mistral%20Medium-orange.svg)](https://docs.mistral.ai/)
+[![Backend: Mistral](https://img.shields.io/badge/STT-Mistral%20Voxtral-orange.svg)](https://docs.mistral.ai/)
+[![Translation: Mistral](https://img.shields.io/badge/Translate-Mistral-orange.svg)](https://docs.mistral.ai/)
 
 <br>
 
@@ -21,14 +21,14 @@ Powered by Gemini 3.5 Transcribe & Mistral Medium 3.5.
 
 ## Overview
 
-OpenSpeaksy is a native, open-source macOS menu-less background service for instant voice-to-text dictation and real-time translation. Bring your own API keys — no subscriptions, accounts, or telemetry.
+OpenSpeaksy is a native, open-source macOS menu-less background service for instant voice-to-text dictation and real-time translation. Bring your own Mistral API key — no subscriptions, accounts, or telemetry.
 
 | Feature | OpenSpeaksy | Typical Paid App |
 |:---|:---|:---|
-| **Pricing** | **Free & Open Source** (MIT) — BYO API keys | $10 – $15 / month |
+| **Pricing** | **Free & Open Source** (MIT) — BYO API key | $10 – $15 / month |
 | **Privacy** | 100% local daemon, zero tracking, keys in `0600` plist | Cloud telemetry & accounts |
-| **STT Engine** | **Gemini 3.5 Transcribe** (85+ languages, jargon-aware) | Generic Whisper or proprietary |
-| **Translation** | **Mistral Medium 3.5** (natural human phrasing) | Basic machine translation |
+| **STT Engine** | **Mistral Voxtral** (multilingual, jargon-aware) | Generic Whisper or proprietary |
+| **Translation** | **Mistral** (natural human phrasing) | Basic machine translation |
 | **Reliability** | Atomic disk buffer, watchdog, background crash recovery | Audio lost on app crash |
 
 ---
@@ -56,8 +56,7 @@ A non-intrusive floating dark pill appears dynamically:
 
 ### Prerequisites
 
-1. **Gemini API Key(s)** — Get free keys at [Google AI Studio](https://aistudio.google.com/apikey). The free tier allows **3 requests per minute per project**, plus a second cap over a longer window, so list several keys (comma-separated) from **different** Google Cloud projects: each carries its own allowance and every request takes the first key with room. Three keys give roughly nine dictations per minute.
-2. **Mistral API Key** — Get a key at [Mistral Console](https://console.mistral.ai/api-keys) for English and Polish translation.
+1. **Mistral API Key** — Get a key at [Mistral Console](https://console.mistral.ai/api-keys). It covers speech-to-text (Voxtral) and English/Polish translation.
 
 ---
 
@@ -72,7 +71,7 @@ git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
 cd ~/OpenSpeaksy
 ./scripts/install.sh
 
-The installer will ask for my Gemini and Mistral API keys — I'll paste them when prompted.
+The installer will ask for my Mistral API key — I'll paste it when prompted.
 Then walk me through granting Input Monitoring and Accessibility permissions
 in System Settings → Privacy & Security.
 ```
@@ -90,7 +89,7 @@ cd ~/OpenSpeaksy
 ./scripts/install.sh
 ```
 
-During installation, paste your API keys. The installer sets up an isolated Python virtual environment and registers a `launchd` service at `~/Library/LaunchAgents/com.openspeaksy.plist`.
+During installation, paste your API key. The installer sets up an isolated Python virtual environment and registers a `launchd` service at `~/Library/LaunchAgents/com.openspeaksy.plist`.
 
 #### Grant macOS Permissions:
 
@@ -112,18 +111,15 @@ Settings can be customized in `~/Library/LaunchAgents/com.openspeaksy.plist` und
 
 | Variable | Default | Description |
 |:---|:---|:---|
-| `OPENSPEAKSY_STT_BACKEND` | `gemini` | Primary STT provider (`gemini` or `mistral`). |
-| `GEMINI_API_KEYS` | *(from install)* | Comma-separated Gemini API keys for sliding-window rotation. |
-| `GEMINI_MODEL` | `gemini-3.5-transcribe` | Gemini transcription model. |
-| `OPENSPEAKSY_GEMINI_RPM` | `3` | Estimated RPM per key before automatic rotation. |
-| `OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND` | `mistral` | Automatic fallback STT provider when all Gemini keys hit rate limits. |
+| `OPENSPEAKSY_STT_BACKEND` | `mistral` | STT provider. Mistral is the only supported value. |
 | `OPENSPEAKSY_POLISH_STT_BACKEND` | inherits `OPENSPEAKSY_STT_BACKEND` | STT provider used by right ⇧ only. |
-| `MISTRAL_API_KEY` | *(from install)* | Mistral API key for translations, and for the rate-limit fallback. |
-| `MISTRAL_MODEL` | `voxtral-mini-2602` | Model used when STT is `mistral`, including the fallback above. |
-| `MISTRAL_TRANSLATION_MODEL` | `mistral-medium-3-5` | Model for Russian-to-English/Polish translations. |
+| `MISTRAL_API_KEY` | *(from install)* | Mistral API key for both transcription and translation. |
+| `MISTRAL_MODEL` | `voxtral-mini-2602` | Speech-to-text model. |
+| `MISTRAL_TRANSLATION_MODEL` | `ministral-8b-latest` | Model for Russian-to-English/Polish translations. |
 | `MISTRAL_TRANSLATION_TEMPERATURE` | `0.2` | Temperature for natural conversational phrasing. |
 | `OPENSPEAKSY_DICTATE_LANGUAGE` | `""` (auto) | Force dictation language (e.g., `ru`, `en`, `de`). |
 | `OPENSPEAKSY_CORRECT_DICTATION` | `0` | Optional LLM correction pass for dictation (set `1` to enable). |
+| `MISTRAL_CORRECTION_MODEL` | `ministral-8b-latest` | Model used for the optional correction pass. |
 
 After modifying the plist, reload the service:
 ```bash
@@ -136,8 +132,7 @@ launchctl load ~/Library/LaunchAgents/com.openspeaksy.plist
 ## Architecture & Reliability
 
 - **Native macOS Integration**: Uses a low-level Quartz `CGEventTap` (listen-only, so modifiers are never swallowed) and an AppKit runloop. Measured idle: 0.0% CPU, ~88 MB RSS.
-- **Multi-Key Sliding-Window Rotation**: Distributes requests across Gemini keys and honours the provider's own wait. Gemini reports it in the body of its 429 (there is no `Retry-After` header on those), so the body is parsed and that key is held closed for exactly as long as Google asked, which our own request counting cannot predict on its own.
-- **Fail-Safe Voxtral Fallback**: If all Gemini keys are throttled, seamlessly falls back to Voxtral Mini Transcribe without dropping dictation.
+- **Bounded Retries**: Transient failures (timeouts, 5xx, connect errors) get a few short retries; a 429 fails fast rather than stretching the spinner, since there is no second key to rotate to.
 - **Atomic File Buffering**: Audio is written to `.pending/*.wav` (fsynced, then atomically renamed) before any network call. If the network drops or the machine crashes, the recording is retried in the background within minutes, and anything still queued is recovered to the clipboard on the next start — never pasted unprompted, since the focused app at login has nothing to do with what was dictated.
 - **Watchdog Protection**: Background watchdog resets stuck states and prevents dangling audio capture.
 - **Privacy & Security**: Plist files are created with `0600` permissions. Transcribed text and API keys are never logged.
@@ -151,8 +146,8 @@ launchctl load ~/Library/LaunchAgents/com.openspeaksy.plist
 | Hotkey ignored, nothing happens | Ensure **Input Monitoring** is granted to `venv/bin/python`. |
 | Audio records but text does not paste | Ensure **Accessibility** is granted to `venv/bin/python`. |
 | "Microphone access is blocked" notice | Enable microphone permission in **System Settings → Privacy & Security → Microphone**. |
-| "Rate limited, try again in Xs" | Every Gemini key is throttled and the fallback is off. The number comes from Google itself. Add more keys in `GEMINI_API_KEYS` to raise the ceiling. |
-| "Recording is too long to transcribe" | Over ~7.6 minutes exceeds the inline upload limit. The audio is moved to `.pending/quarantine/` rather than retried or discarded. |
+| "Rate limited, try again in Xs" | Mistral is throttling the account. The number comes from the provider itself; the recording stays queued and retries automatically. |
+| "Recording is too long to transcribe" | The audio exceeds the provider's upload limit. It is moved to `.pending/quarantine/` rather than retried or discarded. |
 | Hotkey ignored in password fields | Expected when macOS Secure Input is active in sensitive input prompts. |
 
 ---

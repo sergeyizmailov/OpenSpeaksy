@@ -21,7 +21,7 @@ def test_a_wait_hint_becomes_the_headline():
     """The seconds left is the single most actionable thing to show."""
     notice = main.error_notice(
         TranscriptionError(
-            "all 3 Gemini key(s) are rate-limited; next one frees up in 39s"
+            "Mistral is rate-limited; next one frees up in 39s"
         )
     )
     assert notice == "Rate limited, try again in 39s"
@@ -47,8 +47,8 @@ def test_a_dead_network_says_so():
 @pytest.mark.parametrize(
     "raw, expected_fragment",
     [
-        ("recording is too large for inline Gemini upload: 99 bytes", "too long"),
-        ("Gemini API key is not configured", "API key"),
+        ("recording is too large for Mistral upload: 99 bytes", "too long"),
+        ("Mistral API key is not configured", "API key"),
         ("Microphone permission is denied", "Microphone"),
     ],
 )

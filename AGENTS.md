@@ -6,22 +6,20 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 ## If the user asks you to install OpenSpeaksy
 
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
-2. Make sure the user has BOTH keys the installer needs: a Gemini API key
-   (<https://aistudio.google.com/apikey>) for all speech-to-text, and a
-   Mistral API key (<https://console.mistral.ai/api-keys>) for the two
-   translate hotkeys. Neither is optional with the shipped defaults.
+2. Make sure the user has a Mistral API key
+   (<https://console.mistral.ai/api-keys>). It is required for both
+   speech-to-text (Voxtral) and the two translate hotkeys — not optional with
+   the shipped defaults.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
-   keys and write them into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
+   key and write it into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
    `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
-   in the environment before running to skip its prompt, and
-   `GEMINI_API_KEYS=key1,key2` to skip the Gemini prompt.
+   in the environment before running to skip its prompt.
 4. After install, the user must manually grant **Input Monitoring** and
    **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
    & Security. Tell them which path to authorize. Do not try to do this
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
-   see `OpenSpeaksy starting — primary STT: Gemini gemini-3.5-transcribe`
-   followed by the key count and per-key rate limit.
+   see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
 6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish.
 
 ## If the user asks you to modify or debug OpenSpeaksy
@@ -30,7 +28,7 @@ Read these files in order — they are short and explicit:
 
 - `main.py` — entry point, state machine, key handling, paste, watchdog, recovery
 - `recorder.py` — PortAudio capture
-- `transcriber.py` — Gemini/Mistral STT plus the Mistral Medium translation client
+- `transcriber.py` — Mistral STT plus the Mistral translation client
 - `overlay.py` — NSPanel pill overlay
 - `launchd/com.openspeaksy.plist.template` — LaunchAgent definition
 
@@ -49,10 +47,10 @@ Conventions in this codebase:
   for a keycode that doesn't match `current_hotkey` is ignored — this is what
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
 - **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) routes through
-  `transcribe_and_correct_sync` (selected STT backend → optional correction pass
+  `transcribe_and_correct_sync` (Mistral STT → optional correction pass
   for transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
   right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Gemini RU → Mistral translate);
+  `transcribe_and_translate_sync` (Mistral STT RU → Mistral translate);
   right Shift (`MODE_POLISH`)
   mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The
   mode is captured under `state_lock` in `_begin_recording` and consumed by
@@ -61,8 +59,9 @@ Conventions in this codebase:
   lose the intent.
 - **Per-mode STT routing**: `OPENSPEAKSY_DICTATE_LANGUAGE` optionally forces a
   language hint for right Command; right Option always requests Russian;
-  `OPENSPEAKSY_POLISH_STT_BACKEND` independently selects the right-Shift STT
-  provider; right Shift still forces Russian before the Mistral Polish translation.
+  `OPENSPEAKSY_POLISH_STT_BACKEND` exists for interface parity but can only
+  ever resolve to `mistral`; right Shift still forces Russian before the
+  Mistral Polish translation.
 - **Overlay labels reflect intent**: call `Overlay.show(mode, label=...)` with
   the value from `MODE_LABELS`. All modes share the same flat dark pill;
   translate modes add `English` or `Polish` above it. Errors show a message
@@ -89,25 +88,14 @@ Conventions in this codebase:
   corrupt WAVs beside the source directory.
 - **Permissions**: `.pending/` is `0700`, files are `0600`. Don't loosen
   this without thinking about what dictated audio leaks imply.
-- **Two provider keys in play**: `GEMINI_API_KEYS` (comma-separated) does all
-  speech-to-text; `MISTRAL_API_KEY` does translation only. Translation ALWAYS
-  goes to Mistral, so its key is required whatever `OPENSPEAKSY_STT_BACKEND` is.
-  Mistral Voxtral stays wired as the alternate STT backend and IS reached in
-  normal operation: OPENSPEAKSY_GEMINI_EXHAUSTED_BACKEND defaults to `mistral`,
-  so every Gemini key being throttled routes the dictation to it. Do not treat
-  that path as dead code.
-- **Gemini quota is per project, so keys are a resource**: each key in
-  `GEMINI_API_KEYS` gets its own `_SlidingWindowQuota` and a request takes the
-  first key with room. Adding a key raises the ceiling; reusing one does not
-  (duplicates are dropped). A 429 abandons that key immediately rather than
-  retrying it, via `_request_json(..., retry_throttling=False)` — do not extend
-  that flag to other providers, where waiting out a 429 is still correct.
-- **Gemini STT is not the usual Gemini endpoint**: `gemini-3.5-transcribe` is
-  called through `POST /v1beta/interactions`, and the transcript is nested in
-  `steps[].content[].text`. `generateContent` returns HTTP 200 with an empty
-  part for this model instead of failing, so a wrong endpoint looks like a
-  silent model rather than an error. See `.notes/index.md` for the full
-  contract, including why a missing `steps` key means silence.
+- **One provider key**: `MISTRAL_API_KEY` does both speech-to-text (Voxtral)
+  and translation/correction. There is nowhere to rotate to on a 429.
+  `_chat_completion` (translate/correct/polish) passes
+  `_request_json(..., retry_throttling=False)` — a 429 fails fast rather than
+  spending the local retry budget on a request the account-level limit will
+  refuse again immediately. The transcription call (`_transcribe_mistral`)
+  keeps the default retry behavior, since a transient 429 there is still
+  worth one bounded retry before the recording falls back to `.pending`.
 
 If you change the LaunchAgent label (`com.openspeaksy`), also update
 `LOG_DIR` in `main.py` and the launchctl commands in scripts/install.sh

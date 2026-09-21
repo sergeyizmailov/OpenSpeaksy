@@ -3,14 +3,13 @@
 # OpenSpeaksy installer for macOS.
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
-# Requires Gemini and Mistral API keys and writes them into the plist's
-# EnvironmentVariables. Gemini 3.5 Transcribe handles all speech-to-text and
-# Mistral Medium handles the translate hotkeys.
+# Requires a Mistral API key and writes it into the plist's
+# EnvironmentVariables. Mistral handles both speech-to-text (Voxtral) and the
+# translate hotkeys.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
 #          MISTRAL_API_KEY=key      (skip the Mistral prompt)
-#          GEMINI_API_KEYS=key1,key2   (one or more, comma-separated)
 
 set -euo pipefail
 
@@ -56,8 +55,8 @@ fi
 step "Configuring Mistral API key"
 if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses Mistral Medium for Russian-to-English and
-    Russian-to-Polish translation.
+    OpenSpeaksy uses Mistral for speech-to-text (Voxtral) and for
+    Russian-to-English / Russian-to-Polish translation.
     Create an API key at: https://console.mistral.ai/api-keys
 
     The key is written only into your local plist
@@ -69,26 +68,6 @@ EOF
 fi
 [[ -n "$MISTRAL_API_KEY" ]] || fail "no Mistral API key provided"
 note "Got Mistral key ending in ...${MISTRAL_API_KEY: -4}"
-
-step "Configuring Gemini API key(s)"
-if [[ -z "${GEMINI_API_KEYS:-}" ]]; then
-    cat <<EOF
-    OpenSpeaksy uses Gemini 3.5 Transcribe for speech-to-text.
-    Create an API key at: https://aistudio.google.com/apikey
-
-    The free tier allows 3 requests per minute PER PROJECT, so you can paste
-    several comma-separated keys from different Google projects to raise that
-    ceiling — each key carries its own quota.
-
-    The key is written only into your local plist
-    ($LAUNCH_AGENTS/${LABEL_APP}.plist) — never to this repo.
-
-EOF
-    read -rs -p "    Paste your Gemini API key(s), comma-separated: " GEMINI_API_KEYS
-    echo
-fi
-[[ -n "$GEMINI_API_KEYS" ]] || fail "no Gemini API key provided"
-note "Got $(printf '%s' "$GEMINI_API_KEYS" | awk -F, '{print NF}') Gemini key(s)"
 
 # --- main app venv ----------------------------------------------------------
 
@@ -109,14 +88,13 @@ mkdir -p "$LAUNCH_AGENTS"
 
 # Use Python's plistlib so paths and key values with XML-sensitive characters
 # are escaped correctly — sed-substitution would corrupt the plist.
-MISTRAL_API_KEY="$MISTRAL_API_KEY" GEMINI_API_KEYS="$GEMINI_API_KEYS" \
+MISTRAL_API_KEY="$MISTRAL_API_KEY" \
 "$PYTHON_RUNTIME" - "$PROJECT_ROOT/launchd/${LABEL_APP}.plist.template" \
                     "$LAUNCH_AGENTS/${LABEL_APP}.plist" \
                     "$PROJECT_ROOT" <<'PYEOF'
 import os, sys, plistlib
 template, target, project_root = sys.argv[1:4]
 mistral_key = os.environ.pop("MISTRAL_API_KEY")
-gemini_keys = os.environ.pop("GEMINI_API_KEYS")
 with open(template, "rb") as f:
     pl = plistlib.load(f)
 
@@ -127,8 +105,7 @@ def replace(node):
         return {k: replace(v) for k, v in node.items()}
     if isinstance(node, str):
         return (node.replace("__PROJECT_ROOT__", project_root)
-                    .replace("__MISTRAL_API_KEY__", mistral_key)
-                    .replace("__GEMINI_API_KEYS__", gemini_keys))
+                    .replace("__MISTRAL_API_KEY__", mistral_key))
     return node
 
 # Open with 0600 from the start so the API key is never world-readable,
