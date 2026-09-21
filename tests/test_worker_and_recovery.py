@@ -356,8 +356,19 @@ def test_processing_error_message_carries_the_providers_wait(worker, monkeypatch
 
 
 def test_no_stray_threads_are_left_behind():
-    """Guards against a test above leaking a live timer into the next module."""
-    assert threading.active_count() >= 1
+    """
+    Guards against a test above leaking a live timer into the next module.
+    Named threads are the ones this app starts (workers, the watchdog, the
+    pending-retry loop); pytest's own machinery is not among them.
+    """
+    leaked = [
+        t.name
+        for t in threading.enumerate()
+        if t.is_alive()
+        and not t.daemon
+        and t is not threading.main_thread()
+    ]
+    assert leaked == [], f"threads still running: {leaked}"
 
 
 def test_shutdown_waits_for_an_in_flight_save(monkeypatch):

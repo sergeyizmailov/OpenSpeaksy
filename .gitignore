@@ -7,6 +7,7 @@ venv/
 __pycache__/
 *.pyc
 *.pyo
+.pytest_cache/
 
 # macOS
 .DS_Store
@@ -14,6 +15,7 @@ __pycache__/
 # Editor
 .vscode/
 .idea/
+.claude/
 
 # Logs
 *.log

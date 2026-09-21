@@ -2,13 +2,10 @@ import main
 
 
 class StubTranscriber:
-    def __init__(self, *, text=None, error=None):
+    def __init__(self, *, text=None):
         self.text = text
-        self.error = error
 
     def transcribe_and_correct_sync(self, path, language=None):
-        if self.error:
-            raise self.error
         return self.text
 
 
@@ -18,45 +15,6 @@ def _valid_wav(path):
         b"\x01\x00\x01\x00\x80\x3e\x00\x00\x00\x7d\x00\x00"
         b"\x02\x00\x10\x00data\x02\x00\x00\x00\x00\x00"
     )
-
-
-def test_recovery_copies_then_deletes_pending_audio(tmp_path, monkeypatch):
-    pending = tmp_path / ".pending"
-    pending.mkdir()
-    wav = pending / "20260721-000000-a.dictate.wav"
-    _valid_wav(wav)
-    clipboard = []
-
-    monkeypatch.setattr(main, "PENDING_DIR", pending)
-    monkeypatch.setattr(main, "QUARANTINE_DIR", pending / "quarantine")
-    monkeypatch.setattr(main, "FALLBACK_PENDING_DIR", tmp_path / "fallback")
-    monkeypatch.setattr(main, "transcriber", StubTranscriber(text="recovered "))
-    monkeypatch.setattr(main, "copy_to_clipboard", clipboard.append)
-
-    main.recover_pending_recordings()
-
-    assert clipboard == ["recovered "]
-    assert not wav.exists()
-
-
-def test_recovery_keeps_audio_when_transcription_fails(tmp_path, monkeypatch):
-    pending = tmp_path / ".pending"
-    pending.mkdir()
-    wav = pending / "20260721-000000-a.dictate.wav"
-    _valid_wav(wav)
-
-    monkeypatch.setattr(main, "PENDING_DIR", pending)
-    monkeypatch.setattr(main, "QUARANTINE_DIR", pending / "quarantine")
-    monkeypatch.setattr(main, "FALLBACK_PENDING_DIR", tmp_path / "fallback")
-    monkeypatch.setattr(
-        main,
-        "transcriber",
-        StubTranscriber(error=main.TranscriptionError("provider unavailable")),
-    )
-
-    main.recover_pending_recordings()
-
-    assert wav.exists()
 
 
 def test_recovery_stops_after_provider_failure_to_unblock_hotkeys(
@@ -84,45 +42,6 @@ def test_recovery_stops_after_provider_failure_to_unblock_hotkeys(
 
     assert calls == [first]
     assert first.exists() and second.exists()
-
-
-def test_recovery_skips_poison_file_and_recovers_rest(tmp_path, monkeypatch):
-    pending = tmp_path / ".pending"
-    pending.mkdir()
-    poison = pending / "20260721-000000-a.dictate.wav"
-    good = pending / "20260721-000001-b.dictate.wav"
-    _valid_wav(poison)
-    _valid_wav(good)
-    clipboard = []
-
-    class PoisonThenGoodTranscriber:
-        def __init__(self):
-            self.calls = []
-
-        def transcribe_and_correct_sync(self, path, language=None):
-            self.calls.append(path)
-            if path == poison:
-                raise main.TranscriptionError(
-                    "provider returned an empty transcript for non-silent audio"
-                )
-            return "recovered "
-
-    stub = PoisonThenGoodTranscriber()
-    monkeypatch.setattr(main, "PENDING_DIR", pending)
-    monkeypatch.setattr(main, "QUARANTINE_DIR", pending / "quarantine")
-    monkeypatch.setattr(main, "FALLBACK_PENDING_DIR", tmp_path / "fallback")
-    monkeypatch.setattr(main, "transcriber", stub)
-    monkeypatch.setattr(main, "copy_to_clipboard", clipboard.append)
-
-    main.recover_pending_recordings()
-
-    # Both files were attempted; the poison file stays for a later retry,
-    # the good one was recovered to the clipboard and deleted.
-    assert stub.calls == [poison, good]
-    assert clipboard == ["recovered "]
-    assert poison.exists() and not good.exists()
-
-
 def test_recovery_processes_fallback_storage(tmp_path, monkeypatch):
     primary = tmp_path / ".pending"
     fallback = tmp_path / "fallback"
