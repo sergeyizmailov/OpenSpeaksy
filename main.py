@@ -32,6 +32,7 @@ from PyObjCTools import AppHelper
 from recorder import Recorder
 from transcriber import (
     CORRECT_DICTATION,
+    is_capacity_shortage,
     DICTATE_LANGUAGE,
     MISTRAL_API_KEY,
     MISTRAL_CORRECTION_MODEL,
@@ -629,7 +630,13 @@ def error_notice(error):
     if wait:
         seconds = int(float(wait.group(1)) + 0.5)
         return f"Rate limited, try again in {seconds}s"
-    if "rate-limited" in text.lower() or "429" in text:
+    # Mistral reports a capacity shortage and a spent quota with the same
+    # status, so the body decides the wording. They call for opposite
+    # reactions: a capacity refusal clears on its own and the retry ladder is
+    # already working on it, while a spent quota means waiting for a reset.
+    if is_capacity_shortage(error):
+        return "Provider busy, retrying"
+    if "429" in text:
         return "Rate limited, try again shortly"
     if isinstance(error, ProviderUnavailableError):
         return "No connection to the transcription service"
@@ -848,7 +855,7 @@ def _begin_recording(keycode, mode):
     can see the new "recording" state but the wrong (stale) hotkey/mode.
     Returns True on success.
     """
-    global state, state_ts, current_job_id, current_hotkey, current_mode
+    global state, state_ts, current_hotkey, current_mode
     global current_wav_path
     with state_lock:
         if state != "idle":

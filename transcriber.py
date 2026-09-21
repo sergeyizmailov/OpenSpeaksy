@@ -20,6 +20,13 @@ logger = logging.getLogger("openspeaksy")
 # Transient failures are retried below, so several short bounded attempts are
 # both faster to recover and safer than one very long socket wait.
 REQUEST_TIMEOUT_SEC = 30
+# Refuse an upload this large before spending a round-trip on it. Measured
+# 2026-09-22: a 110 MB WAV (1 h of audio, what a stuck key produces against
+# RECORDING_TIMEOUT_SEC) is answered with 429 code 3505, the same capacity
+# refusal a transient shortage gives — so the retry ladder would wait it out
+# again and again, ~3 min per attempt, instead of setting it aside. The size
+# is the one signal that separates the two, and only this side can see it.
+MAX_UPLOAD_BYTES = 80 * 1024 * 1024
 REQUEST_MAX_ATTEMPTS = 3
 # A connect-phase failure means the request never reached the provider.
 # Each attempt burns the full socket timeout while DNS or the route is down,
@@ -140,17 +147,9 @@ def _http_error_text(error):
     detail = " ".join(raw.split())
     if not detail:
         return base
-    # Providers wrap the useful sentence in JSON. Unwrap it when it parses;
-    # a body truncated by the read limit just falls back to the raw text.
-    try:
-        parsed = json.loads(detail)
-    except ValueError:
-        parsed = None
-    if isinstance(parsed, dict):
-        inner = parsed.get("error")
-        message = inner.get("message") if isinstance(inner, dict) else None
-        if isinstance(message, str) and message.strip():
-            detail = " ".join(message.split())
+    # Mistral's error bodies are flat ({"message", "type", "code"}), and the
+    # type/code are what separates a capacity shortage from a spent quota, so
+    # the raw JSON is kept rather than unwrapped down to the message.
     if len(detail) > HTTP_BODY_KEEP_CHARS:
         detail = detail[:HTTP_BODY_KEEP_CHARS] + "…"
     return f"{base}: {detail}"
@@ -318,7 +317,7 @@ def _is_connect_failure(error):
     return isinstance(reason, OSError) and reason.errno in _CONNECT_FAILURE_ERRNOS
 
 
-def _is_capacity_shortage(error):
+def is_capacity_shortage(error):
     """
     True for a provider-side capacity refusal rather than a spent quota.
 
@@ -341,14 +340,21 @@ def _retry_delay(error, attempt):
     if isinstance(error, HTTPError):
         if error.code not in RETRYABLE_HTTP_CODES:
             return None
-        retry_after = error.headers.get("Retry-After") if error.headers else None
-        if retry_after:
-            try:
-                # Keep the UI responsive even if a provider sends a very large
-                # Retry-After value. The pending WAV remains available later.
-                return max(0.0, min(float(retry_after), 5.0))
-            except (TypeError, ValueError):
-                pass
+        # A capacity shortage takes the longer ladder below even when the
+        # response carries Retry-After: the 5 s cap here exists to keep the UI
+        # responsive on an ordinary throttle, and applying it to a capacity
+        # burst would reinstate the give-up-too-early bug the ladder fixes.
+        # Mistral sends no Retry-After today (verified 2026-09-22), so this
+        # ordering is a guard against the day it starts.
+        if not is_capacity_shortage(error):
+            retry_after = error.headers.get("Retry-After") if error.headers else None
+            if retry_after:
+                try:
+                    # Keep the UI responsive even if a provider sends a very
+                    # large Retry-After. The pending WAV remains available.
+                    return max(0.0, min(float(retry_after), 5.0))
+                except (TypeError, ValueError):
+                    pass
     elif not isinstance(
         error,
         (
@@ -365,7 +371,7 @@ def _retry_delay(error, attempt):
     ):
         return None
 
-    if isinstance(error, HTTPError) and _is_capacity_shortage(error):
+    if isinstance(error, HTTPError) and is_capacity_shortage(error):
         ladder = CAPACITY_RETRY_DELAYS_SEC
         return ladder[min(attempt - 1, len(ladder) - 1)]
 
@@ -390,7 +396,7 @@ def _request_json(request, label, validate=None, retry_throttling=True):
             result = json.loads(response.read().decode())
             return validate(result) if validate is not None else result
         except Exception as error:
-            capacity = isinstance(error, HTTPError) and _is_capacity_shortage(error)
+            capacity = isinstance(error, HTTPError) and is_capacity_shortage(error)
             if _is_connect_failure(error):
                 max_attempts = CONNECT_MAX_ATTEMPTS
             elif capacity:
@@ -670,6 +676,15 @@ class Transcriber:
 
         with open(wav_path, "rb") as f:
             wav_data = f.read()
+
+        if len(wav_data) > MAX_UPLOAD_BYTES:
+            # RequestRejectedError, so recovery quarantines it instead of
+            # retrying a payload no amount of waiting will make acceptable.
+            raise RequestRejectedError(
+                f"recording is too large to transcribe "
+                f"({len(wav_data) // (1024 * 1024)} MB, limit "
+                f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB)"
+            )
 
         fields = [("model", MISTRAL_MODEL)]
         if language:

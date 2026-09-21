@@ -39,10 +39,10 @@ QUOTA_BODY = {
 
 
 def test_capacity_refusal_is_distinguished_from_spent_quota():
-    assert t._is_capacity_shortage(
+    assert t.is_capacity_shortage(
         "HTTP Error 429: " + json.dumps(CAPACITY_BODY)
     )
-    assert not t._is_capacity_shortage(
+    assert not t.is_capacity_shortage(
         "HTTP Error 429: " + json.dumps(QUOTA_BODY)
     )
 
@@ -120,3 +120,36 @@ def test_spent_quota_still_fails_fast_when_throttling_retry_is_off():
             )
 
     assert attempts["n"] == 1
+
+
+def test_overlay_wording_separates_capacity_from_quota():
+    """
+    The pill must not call a capacity shortage "rate limited": the two ask the
+    user for opposite reactions, and the retry ladder is already working on the
+    capacity one.
+    """
+    import main
+
+    quota = "HTTP Error 429: Too Many Requests: " + json.dumps(QUOTA_BODY)
+    capacity = "HTTP Error 429: Too Many Requests: " + json.dumps(CAPACITY_BODY)
+
+    assert main.error_notice(Exception(quota)) == "Rate limited, try again shortly"
+    assert main.error_notice(Exception(capacity)) == "Provider busy, retrying"
+
+
+def test_oversized_recording_is_rejected_before_the_upload(tmp_path):
+    """
+    A payload this large comes back as the same 3505 the retry ladder waits
+    out, so it must be refused locally — otherwise it is retried forever.
+    """
+    wav = tmp_path / "huge.wav"
+    wav.write_bytes(b"\0" * (t.MAX_UPLOAD_BYTES + 1))
+    called = []
+
+    with patch.object(t, "MISTRAL_API_KEY", "test-key"), patch.object(
+        t, "urlopen", side_effect=lambda *a, **k: called.append(1)
+    ):
+        with pytest.raises(t.RequestRejectedError):
+            t.Transcriber()._transcribe_mistral(wav)
+
+    assert called == []

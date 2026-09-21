@@ -414,9 +414,13 @@ class Overlay:
             return
         self._show("error", None, message, token)
         gen = self._gen
-        threading.Timer(
+        # daemon, so a pending hide never holds the process open on shutdown:
+        # the pill is going away with the app anyway.
+        timer = threading.Timer(
             duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)
-        ).start()
+        )
+        timer.daemon = True
+        timer.start()
 
     def _hide_if_current(self, gen):
         if gen == self._gen:
