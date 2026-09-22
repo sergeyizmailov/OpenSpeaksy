@@ -57,6 +57,15 @@ TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
 TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
 POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian, paste Polish
 POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
+# Cancel. A modifier on purpose: the event tap subscribes to
+# kCGEventFlagsChanged only, so an ordinary key like Escape or Space would mean
+# subscribing to every keystroke the user types. Space would also fire
+# constantly — a retry can run for minutes while the user is typing normally,
+# and every space would cancel it.
+CANCEL_KEYCODE = 0x3E   # right Control
+CANCEL_FLAG    = 0x2000 # NX_DEVICERCTLKEYMASK — distinguishes right Ctrl from left
+# Two taps inside this window mean "try again now" rather than a second cancel.
+CANCEL_DOUBLE_TAP_SEC = 0.6
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
 MODE_POLISH    = "polish"
@@ -557,6 +566,10 @@ _pending_next_attempt = {}
 # Retries so far, per file — paces the backoff only. Separate from
 # _pending_failures, which gates quarantine and must not count an outage.
 _pending_attempt_count = {}
+# Files the user cancelled. The audio is kept — only the automatic retries
+# stop, so a stuck transcription can be called off without losing what was
+# said. Cleared by a double tap, which puts everything back in the queue.
+_pending_cancelled = set()
 
 
 def _schedule_pending_retry(path, error=None):
@@ -589,10 +602,15 @@ def _schedule_pending_retry(path, error=None):
 
 
 def _due_pending(paths):
-    """The subset whose next-attempt time has arrived."""
+    """The subset whose next-attempt time has arrived and is not cancelled."""
     now = time.monotonic()
     with _pending_failures_lock:
-        return [p for p in paths if _pending_next_attempt.get(p.name, 0.0) <= now]
+        return [
+            p
+            for p in paths
+            if p.name not in _pending_cancelled
+            and _pending_next_attempt.get(p.name, 0.0) <= now
+        ]
 
 
 def _note_pending_failure(path):
@@ -608,6 +626,7 @@ def _clear_pending_failures(name):
         _pending_failures.pop(name, None)
         _pending_next_attempt.pop(name, None)
         _pending_attempt_count.pop(name, None)
+        _pending_cancelled.discard(name)
 
 
 def purge_expired_pending(paths):
@@ -966,6 +985,78 @@ def recover_pending_recordings():
         delete_pending_recording(path)
 
 
+def _all_pending_names():
+    """Every recording currently queued on disk, across both directories."""
+    names = []
+    for pending_dir in (PENDING_DIR, FALLBACK_PENDING_DIR):
+        if pending_dir.is_dir():
+            names.extend(p.name for p in pending_dir.glob("*.wav"))
+    return names
+
+
+def cancel_everything():
+    """
+    Stop whatever is in flight and hold the queue, without losing audio.
+
+    A state-machine primitive, like the watchdog's reset: it bumps
+    current_job_id so an in-flight worker's claim fails and it aborts
+    silently instead of pasting into whatever the user is doing next. A
+    recording still being captured is finalized to disk rather than dropped —
+    the user asked to stop waiting, not to discard what they said.
+
+    Returns (what_was_stopped, recordings_held).
+    """
+    global state, state_ts, current_job_id, current_hotkey, current_mode
+    global current_wav_path
+
+    stopped = None
+    finish_keycode = None
+    with state_lock:
+        if state == "recording":
+            stopped = "recording"
+            finish_keycode = current_hotkey
+        elif state == "processing":
+            stopped = "processing"
+            current_job_id += 1
+            state = "idle"
+            state_ts = time.monotonic()
+            current_hotkey = None
+            current_mode = None
+            current_wav_path = None
+
+    if finish_keycode is not None:
+        # Outside the lock, like the watchdog's hard-limit branch: on_key_up
+        # owns stop → atomic save → worker. Run it so the audio reaches disk,
+        # then void the job it just started — the recording belongs to the
+        # user, the transcription is what they asked to call off.
+        on_key_up(finish_keycode)
+        with state_lock:
+            current_job_id += 1
+            if state == "processing":
+                state = "idle"
+                state_ts = time.monotonic()
+                current_hotkey = None
+                current_mode = None
+                current_wav_path = None
+
+    held = _all_pending_names()
+    with _pending_failures_lock:
+        _pending_cancelled.update(held)
+    return stopped, len(held)
+
+
+def resume_everything():
+    """
+    Undo a cancel: clear the hold and make every queued recording due now.
+    Returns how many were released.
+    """
+    with _pending_failures_lock:
+        _pending_cancelled.clear()
+        for name in _all_pending_names():
+            _pending_next_attempt[name] = 0.0
+        return len(_all_pending_names())
+
+
 def _begin_recording(keycode, mode):
     """
     Atomic idle→recording transition that also latches the hotkey and mode
@@ -1021,6 +1112,44 @@ def on_key_down(keycode, mode):
         log(f"recorder.start error: {e}")
         _abandon_recording_cycle()
         overlay.flash_error("Could not start recording")
+
+
+_last_cancel_tap = 0.0
+_cancel_tap_lock = threading.Lock()
+
+
+def on_cancel_tap():
+    """
+    Right Control. One tap stops everything and holds the queue; a second tap
+    inside CANCEL_DOUBLE_TAP_SEC releases it and tries again straight away, so
+    the same key both calls off a stuck transcription and restarts it.
+    """
+    global _last_cancel_tap
+    now = time.monotonic()
+    with _cancel_tap_lock:
+        double = (now - _last_cancel_tap) <= CANCEL_DOUBLE_TAP_SEC
+        _last_cancel_tap = 0.0 if double else now
+
+    if double:
+        released = resume_everything()
+        log(f"resume requested: {released} recording(s) queued now")
+        overlay.flash_notice(
+            f"Retrying {released} recording(s) now" if released
+            else "Nothing waiting to retry",
+            sound=False,
+        )
+        return
+
+    stopped, held = cancel_everything()
+    log(f"cancel requested: stopped={stopped or 'nothing'}; {held} held")
+    if stopped is None and held == 0:
+        overlay.flash_notice("Nothing to cancel", sound=False)
+        return
+    overlay.flash_notice(
+        f"Cancelled — {held} recording(s) kept, double-tap to retry" if held
+        else "Cancelled",
+        sound=False,
+    )
 
 
 def on_key_up(keycode):
@@ -1110,6 +1239,12 @@ def tap_callback(proxy, event_type, event, refcon):
                 on_key_down(keycode, MODE_POLISH)
             else:
                 on_key_up(keycode)
+        elif keycode == CANCEL_KEYCODE:
+            # Key-DOWN only. Cancel is an instant action, not a hold, and
+            # acting on both edges would count one press as two taps and turn
+            # every cancel into a resume.
+            if CGEventGetFlags(event) & CANCEL_FLAG:
+                on_cancel_tap()
     except Exception as e:
         log(f"tap_callback error: {e}")
 

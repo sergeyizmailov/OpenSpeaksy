@@ -25,3 +25,5 @@ def _clear(main):
     main._pending_failures.clear()
     main._pending_next_attempt.clear()
     main._pending_attempt_count.clear()
+    main._pending_cancelled.clear()
+    main._last_cancel_tap = 0.0
