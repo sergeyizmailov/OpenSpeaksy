@@ -1,6 +1,6 @@
 """
-Right Control calls off a transcription that is taking too long, and a second
-tap puts it back in the queue.
+Caps Lock calls off a transcription that is taking too long, and a second tap
+puts it back in the queue.
 
 The rule the whole feature rests on: cancelling stops the retries, never the
 audio. A user who gives up waiting must still be able to get the words back.
@@ -160,3 +160,34 @@ def test_cancelling_with_nothing_running_says_so(app):
     main.on_cancel_tap()
 
     assert ("notice", "Nothing to cancel") in app.events
+
+
+def test_every_caps_lock_press_counts_as_one_tap(app, monkeypatch, tmp_path):
+    """
+    Caps Lock is a toggle: one press emits one event whose flag is SET when it
+    turns capitals on and CLEAR when it turns them off. Gating the handler on
+    the flag being set would act on every second press only, and the double
+    tap could never happen at all.
+    """
+    _wav(tmp_path / "20260922-030006-a.dictate.wav")
+    taps = []
+    monkeypatch.setattr(main, "on_cancel_tap", lambda: taps.append(1))
+
+    class _Event:
+        def __init__(self, flags):
+            self.flags = flags
+
+    def _fake_flags(event):
+        return event.flags
+
+    def _fake_keycode(event, field):
+        return main.CANCEL_KEYCODE
+
+    monkeypatch.setattr(main, "CGEventGetFlags", _fake_flags)
+    monkeypatch.setattr(main, "CGEventGetIntegerValueField", _fake_keycode)
+
+    # Press on (flag set), press off (flag clear): two presses, two taps.
+    main.tap_callback(None, main.kCGEventFlagsChanged, _Event(main.CANCEL_FLAG), None)
+    main.tap_callback(None, main.kCGEventFlagsChanged, _Event(0), None)
+
+    assert len(taps) == 2

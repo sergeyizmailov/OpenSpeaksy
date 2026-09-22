@@ -42,6 +42,17 @@ Hold the key, speak, release. The text pastes directly into the active field and
 | **Right ⌘** | **Dictate** | Transcribes spoken audio in any supported language with zero prompt bias. |
 | **Right ⌥** | **Translate (EN)** | Dictate in Russian → pastes natural, idiomatic English. |
 | **Right ⇧** | **Translate (PL)** | Dictate in Russian → pastes natural, idiomatic Polish. |
+| **Caps Lock** | **Cancel** | Tap to stop a transcription that is taking too long. The audio is kept — only the automatic retries stop. Tap twice quickly to retry everything waiting. |
+
+A dropped connection never costs you a recording: the audio is saved before
+the request, the pill says when it will be retried
+(`No connection — retrying in 10s`), and the schedule escalates from 10s to
+5 minutes until it goes through. A recovered transcript lands in the clipboard
+with a message and a sound, since it may arrive while you are working
+elsewhere.
+
+Caps Lock still toggles capitals. To stop that, set System Settings →
+Keyboard → Modifier Keys → Caps Lock → **No Action**.
 
 ### Minimalist Dark Pill Overlay
 

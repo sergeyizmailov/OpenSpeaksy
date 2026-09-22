@@ -62,8 +62,16 @@ POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift f
 # subscribing to every keystroke the user types. Space would also fire
 # constantly — a retry can run for minutes while the user is typing normally,
 # and every space would cancel it.
-CANCEL_KEYCODE = 0x3E   # right Control
-CANCEL_FLAG    = 0x2000 # NX_DEVICERCTLKEYMASK — distinguishes right Ctrl from left
+# Caps Lock, chosen by elimination on a MacBook keyboard: there is no right
+# Control, every LEFT modifier is part of everyday shortcuts (binding one would
+# make Cmd+C cancel a transcription), the other right-hand modifiers are the
+# three dictation hotkeys, and fn already switches this user's input source.
+# Verified on the real keyboard rather than from a header: keycode 0x39, flags
+# 0x00010100. Caps Lock still toggles capitals — set it to "No Action" in
+# System Settings > Keyboard > Modifier Keys to avoid that.
+# Down-edge only, so the toggle's own release does not read as a second tap.
+CANCEL_KEYCODE = 0x39    # Caps Lock
+CANCEL_FLAG    = 0x10000 # NX_ALPHASHIFTMASK — the state bit, not a gate
 # Two taps inside this window mean "try again now" rather than a second cancel.
 CANCEL_DOUBLE_TAP_SEC = 0.6
 MODE_DICTATE   = "dictate"
@@ -1240,11 +1248,13 @@ def tap_callback(proxy, event_type, event, refcon):
             else:
                 on_key_up(keycode)
         elif keycode == CANCEL_KEYCODE:
-            # Key-DOWN only. Cancel is an instant action, not a hold, and
-            # acting on both edges would count one press as two taps and turn
-            # every cancel into a resume.
-            if CGEventGetFlags(event) & CANCEL_FLAG:
-                on_cancel_tap()
+            # Caps Lock is a TOGGLE, not a held modifier: one press emits one
+            # event, carrying the new state, so its flag is set on the press
+            # that turns capitals on and clear on the press that turns them
+            # off. Gating on the flag being set would therefore act on every
+            # SECOND press and make the double tap unreachable. One event is
+            # already one press, so fire on all of them.
+            on_cancel_tap()
     except Exception as e:
         log(f"tap_callback error: {e}")
 
