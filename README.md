@@ -42,7 +42,11 @@ Hold the key, speak, release. The text pastes directly into the active field and
 | **Right ⌘** | **Dictate** | Transcribes spoken audio in any supported language with zero prompt bias. |
 | **Right ⌥** | **Translate (EN)** | Dictate in Russian → pastes natural, idiomatic English. |
 | **Right ⇧** | **Translate (PL)** | Dictate in Russian → pastes natural, idiomatic Polish. |
-| **Caps Lock** | **Cancel** | Tap to stop a transcription that is taking too long. The audio is kept — only the automatic retries stop. Tap twice quickly to retry everything waiting. |
+| **Caps Lock** | **Cancel** | Tap to stop a transcription that has been running more than 10 seconds. The audio is kept — only the automatic retries stop. Tap twice quickly to retry everything waiting. |
+
+The 10-second wait is deliberate: a normal transcription takes a second or
+two, so a capital letter typed just after speaking never interrupts one. A tap
+with nothing stuck to act on does nothing at all.
 
 A dropped connection never costs you a recording: the audio is saved before
 the request, the pill says when it will be retried

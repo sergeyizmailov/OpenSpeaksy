@@ -74,6 +74,11 @@ CANCEL_KEYCODE = 0x39    # Caps Lock
 CANCEL_FLAG    = 0x10000 # NX_ALPHASHIFTMASK — the state bit, not a gate
 # Two taps inside this window mean "try again now" rather than a second cancel.
 CANCEL_DOUBLE_TAP_SEC = 0.6
+# How long a transcription must have been running before a tap can call it off.
+# A healthy one finishes in a second or two, so a tap before this is the user
+# typing a capital letter, not asking to cancel — and silently killing a
+# working transcription would be far worse than ignoring the key.
+CANCEL_GRACE_SEC = 10.0
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
 MODE_POLISH    = "polish"
@@ -993,12 +998,27 @@ def recover_pending_recordings():
         delete_pending_recording(path)
 
 
-def _all_pending_names():
-    """Every recording currently queued on disk, across both directories."""
+def _all_pending_names(min_age_sec=0.0):
+    """
+    Every recording currently queued on disk, across both directories.
+
+    min_age_sec keeps a cancel from touching one that has only just been
+    written: the same grace the in-flight job gets, so the rule the user sees
+    is one rule — a tap acts on what has been stuck for a while, never on
+    something that is still perfectly on track.
+    """
+    cutoff = time.time() - min_age_sec
     names = []
     for pending_dir in (PENDING_DIR, FALLBACK_PENDING_DIR):
-        if pending_dir.is_dir():
-            names.extend(p.name for p in pending_dir.glob("*.wav"))
+        if not pending_dir.is_dir():
+            continue
+        for path in pending_dir.glob("*.wav"):
+            try:
+                if min_age_sec and path.stat().st_mtime > cutoff:
+                    continue
+            except OSError:
+                continue
+            names.append(path.name)
     return names
 
 
@@ -1012,7 +1032,9 @@ def cancel_everything():
     recording still being captured is finalized to disk rather than dropped —
     the user asked to stop waiting, not to discard what they said.
 
-    Returns (what_was_stopped, recordings_held).
+    Returns (what_was_stopped, recordings_held, newly_held). The last one is
+    what decides whether there is anything to tell the user: a tap that held
+    nothing new changed nothing, and this key is also how capitals get typed.
     """
     global state, state_ts, current_job_id, current_hotkey, current_mode
     global current_wav_path
@@ -1047,10 +1069,11 @@ def cancel_everything():
                 current_mode = None
                 current_wav_path = None
 
-    held = _all_pending_names()
+    held = _all_pending_names(min_age_sec=CANCEL_GRACE_SEC)
     with _pending_failures_lock:
+        newly_held = [n for n in held if n not in _pending_cancelled]
         _pending_cancelled.update(held)
-    return stopped, len(held)
+    return stopped, len(held), len(newly_held)
 
 
 def resume_everything():
@@ -1134,25 +1157,38 @@ def on_cancel_tap():
     """
     global _last_cancel_tap
     now = time.monotonic()
+
+    with state_lock:
+        busy = state
+        elapsed = now - state_ts
+
+    # This key is also how people type capitals, so every path that has
+    # nothing to do returns in silence — no pill, no log line. Only a tap that
+    # actually changes something is allowed to say so.
+    if busy == "recording":
+        return
+    if busy == "processing" and elapsed < CANCEL_GRACE_SEC:
+        return
+
+    with _pending_failures_lock:
+        anything_held = bool(_pending_cancelled)
+
+    # A second tap only means "retry now" when the first one held something;
+    # otherwise two stray capitals in a row would release the queue.
     with _cancel_tap_lock:
-        double = (now - _last_cancel_tap) <= CANCEL_DOUBLE_TAP_SEC
+        double = anything_held and (now - _last_cancel_tap) <= CANCEL_DOUBLE_TAP_SEC
         _last_cancel_tap = 0.0 if double else now
 
     if double:
         released = resume_everything()
         log(f"resume requested: {released} recording(s) queued now")
-        overlay.flash_notice(
-            f"Retrying {released} recording(s) now" if released
-            else "Nothing waiting to retry",
-            sound=False,
-        )
+        overlay.flash_notice(f"Retrying {released} recording(s) now", sound=False)
         return
 
-    stopped, held = cancel_everything()
-    log(f"cancel requested: stopped={stopped or 'nothing'}; {held} held")
-    if stopped is None and held == 0:
-        overlay.flash_notice("Nothing to cancel", sound=False)
+    stopped, held, newly_held = cancel_everything()
+    if stopped is None and newly_held == 0:
         return
+    log(f"cancel requested: stopped={stopped or 'nothing'}; {held} held")
     overlay.flash_notice(
         f"Cancelled — {held} recording(s) kept, double-tap to retry" if held
         else "Cancelled",

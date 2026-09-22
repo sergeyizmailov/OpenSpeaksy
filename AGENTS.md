@@ -78,7 +78,10 @@ Conventions in this codebase:
   `logging.getLogger("openspeaksy")` in modules. Never log transcription
   contents — log lengths, paths, errors only. **Never log the API key.**
 - **Cancel is a state-machine primitive**: Caps Lock (`CANCEL_KEYCODE`)
-  calls `on_cancel_tap` → `cancel_everything()` / `resume_everything()`. One
+  calls `on_cancel_tap` → `cancel_everything()` / `resume_everything()`. It only acts on work that has been stuck for `CANCEL_GRACE_SEC`, since
+  this key is also how capitals get typed: an in-flight job younger than that
+  and a recording written more recently than that are both out of reach, and
+  any tap that changes nothing returns in silence. One
   tap holds the queue in `_pending_cancelled` (which `_due_pending` skips); two
   taps inside `CANCEL_DOUBLE_TAP_SEC` release it. Cancelling a live job bumps
   `current_job_id` so its worker aborts, and a cancel while recording routes
