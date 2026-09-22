@@ -53,6 +53,18 @@ _CONNECT_FAILURE_ERRNOS = frozenset({
     errno.ECONNREFUSED,
     errno.EHOSTUNREACH,
     errno.EADDRNOTAVAIL,
+    # The connection died mid-transfer rather than failing to open. Measured
+    # 2026-09-22: a 796 KB upload met EPIPE three times in 2 s and the
+    # dictation was reported as failed. These belong here for two reasons:
+    # the inline budget drops to CONNECT_MAX_ATTEMPTS so the user is not held
+    # waiting on a dead link, and the failure is raised as
+    # ProviderUnavailableError, which recovery treats as "the network is out"
+    # rather than "this file is poison" — without it, an outage long enough to
+    # exhaust PENDING_MAX_FAILURES would quarantine a perfectly good recording.
+    errno.EPIPE,
+    errno.ECONNRESET,
+    errno.ETIMEDOUT,
+    errno.ENOTCONN,
 })
 RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 SILENCE_RMS_THRESHOLD = 0.001

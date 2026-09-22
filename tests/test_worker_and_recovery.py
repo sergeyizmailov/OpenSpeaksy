@@ -97,9 +97,11 @@ def test_a_transient_failure_keeps_the_recording_for_retry(
 
     assert wav.exists()
     assert not (tmp_path / "quarantine").exists()
+    # The countdown is the point: a saved, scheduled recording must not read
+    # like a lost one.
     assert (
         "error",
-        "No connection to the transcription service",
+        "No connection to the transcription service — retrying in 10s",
     ) in worker.events
 
 
@@ -351,7 +353,7 @@ def test_processing_error_message_carries_the_providers_wait(worker, monkeypatch
 
     main.process_pending_recording(wav, 7, main.MODE_DICTATE)
 
-    assert ("error", "Rate limited, try again in 35s") in worker.events
+    assert ("error", "Rate limited — retrying in 35s") in worker.events
     assert wav.exists()
 
 

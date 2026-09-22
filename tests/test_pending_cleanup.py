@@ -38,6 +38,15 @@ def _age(path, days):
     os.utime(path, (old, old))
 
 
+def _backoff_elapsed():
+    """
+    Pretend every scheduled retry is due. Failures now go on an escalating
+    backoff, so a test driving several passes in a row would otherwise be
+    skipped rather than retried.
+    """
+    main._pending_next_attempt.clear()
+
+
 def _wire(monkeypatch, tmp_path, pending, transcriber, clipboard=None):
     # An empty list is falsy, so bind the caller's list explicitly rather than
     # with `clipboard or []` — that would silently swallow every write.
@@ -98,6 +107,7 @@ def test_repeated_failures_quarantine_the_file(tmp_path, monkeypatch):
     _wire(monkeypatch, tmp_path, pending, stub)
 
     for _ in range(main.PENDING_MAX_FAILURES):
+        _backoff_elapsed()
         main.recover_pending_recordings()
 
     assert not wav.exists()
@@ -105,6 +115,7 @@ def test_repeated_failures_quarantine_the_file(tmp_path, monkeypatch):
     assert stub.calls == main.PENDING_MAX_FAILURES
 
     # Quarantined audio is out of the retry loop for good.
+    _backoff_elapsed()
     main.recover_pending_recordings()
     assert stub.calls == main.PENDING_MAX_FAILURES
 
@@ -120,6 +131,7 @@ def test_failure_streak_resets_after_a_success(tmp_path, monkeypatch):
     _wire(monkeypatch, tmp_path, pending, stub)
 
     for _ in range(main.PENDING_MAX_FAILURES - 1):
+        _backoff_elapsed()
         main.recover_pending_recordings()
     assert wav.exists()
 

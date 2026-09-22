@@ -103,6 +103,13 @@ PENDING_AGE_WARN_DAYS = 7
 # directory is the only copy of audio the app could not transcribe.
 PENDING_MAX_FAILURES = 5
 PENDING_MAX_AGE_DAYS = 14
+# A recording whose transcription failed is retried on this escalating
+# schedule rather than on a flat poll. The first step is short because the
+# common case is a brief network drop and the user is still sitting there;
+# the later ones stretch out so a long outage costs a handful of requests
+# instead of one every few seconds. The last value repeats until the file is
+# quarantined, purged, or finally goes through.
+PENDING_RETRY_BACKOFF_SEC = (10, 30, 60, 120, 300)
 
 
 # Bounded log file: 2 MB × 3 files = 6 MB max ever on disk
@@ -408,7 +415,9 @@ def watchdog_loop():
             log(f"watchdog loop error: {e}")
 
 
-PENDING_RETRY_POLL_SEC = 300
+# The loop only wakes up to check what is due — PENDING_RETRY_BACKOFF_SEC is
+# what paces the actual requests.
+PENDING_RETRY_POLL_SEC = 5
 
 
 def pending_retry_loop():
@@ -541,6 +550,51 @@ _pending_failures = {}
 _pending_failures_lock = threading.Lock()
 
 
+# When each pending file may next be attempted, keyed by name (monotonic
+# clock). In memory only, like _pending_failures: a restart means a fresh
+# process that may have working network, so everything is due immediately.
+_pending_next_attempt = {}
+# Retries so far, per file — paces the backoff only. Separate from
+# _pending_failures, which gates quarantine and must not count an outage.
+_pending_attempt_count = {}
+
+
+def _schedule_pending_retry(path, error=None):
+    """
+    Put a failed recording on the backoff schedule and return the delay used,
+    so the caller can tell the user when it will be tried again.
+
+    Paced by its OWN attempt count, deliberately separate from
+    _pending_failures: that one decides quarantine and must ignore network
+    outages, but the backoff has to keep stretching during one or a long
+    outage would mean a request every PENDING_RETRY_BACKOFF_SEC[0] seconds
+    for as long as it lasts.
+
+    A provider that stated its own wait wins whenever it asks for longer:
+    retrying before it said earns the same refusal again.
+    """
+    with _pending_failures_lock:
+        attempt = _pending_attempt_count.get(path.name, 0) + 1
+        _pending_attempt_count[path.name] = attempt
+    step = PENDING_RETRY_BACKOFF_SEC[
+        min(attempt - 1, len(PENDING_RETRY_BACKOFF_SEC) - 1)
+    ]
+    if error is not None:
+        hint = provider_wait_hint(error)
+        if hint is not None:
+            step = max(step, hint)
+    with _pending_failures_lock:
+        _pending_next_attempt[path.name] = time.monotonic() + step
+    return step
+
+
+def _due_pending(paths):
+    """The subset whose next-attempt time has arrived."""
+    now = time.monotonic()
+    with _pending_failures_lock:
+        return [p for p in paths if _pending_next_attempt.get(p.name, 0.0) <= now]
+
+
 def _note_pending_failure(path):
     """Count one failed recovery attempt; True once the file is past the cap."""
     with _pending_failures_lock:
@@ -552,6 +606,8 @@ def _note_pending_failure(path):
 def _clear_pending_failures(name):
     with _pending_failures_lock:
         _pending_failures.pop(name, None)
+        _pending_next_attempt.pop(name, None)
+        _pending_attempt_count.pop(name, None)
 
 
 def purge_expired_pending(paths):
@@ -615,41 +671,75 @@ def is_valid_wav(path):
         return False
 
 
-def error_notice(error):
+def _with_retry(message, retry_in):
+    """Append the scheduled retry, when there is one."""
+    if retry_in is None:
+        return message
+    return f"{message} — retrying in {retry_in}s"
+
+
+def provider_wait_hint(error):
+    """
+    How long the provider itself asked us to wait, in seconds, or None.
+
+    Its own number beats any schedule we invent: retrying sooner than it said
+    just earns the same refusal again.
+    """
+    match = re.search(
+        r"(?:frees up in|retry in)\s*([\d.]+)\s*s", str(error), re.IGNORECASE
+    )
+    if not match:
+        return None
+    try:
+        return int(float(match.group(1)) + 0.5)
+    except ValueError:
+        return None
+
+
+def error_notice(error, retry_in=None):
     """
     A short, human notice for the overlay pill. Provider errors are written for
     logs ("HTTP Error 429: Too Many Requests"), which says nothing useful to
-    someone who just spoke into their laptop. Where the provider told us how
-    long to wait, that number is the single most useful thing to show.
+    someone who just spoke into their laptop.
+
+    retry_in turns the message from a verdict into a status: the audio is
+    saved and already scheduled, so the pill says when it will be tried again.
+    Without that, a passing network blip reads as a lost dictation and the
+    user re-records something the app is about to deliver anyway.
     """
     text = str(error).strip()
     if not text:
-        return "Transcription failed"
+        return _with_retry("Transcription failed", retry_in)
 
-    wait = re.search(r"(?:frees up in|retry in)\s*([\d.]+)\s*s", text, re.IGNORECASE)
-    if wait:
-        seconds = int(float(wait.group(1)) + 0.5)
-        return f"Rate limited, try again in {seconds}s"
+    hint = provider_wait_hint(error)
+    if hint is not None:
+        # The schedule already folded this hint in, so the countdown below
+        # states it once rather than quoting two different numbers.
+        return _with_retry("Rate limited", retry_in) if retry_in else (
+            f"Rate limited, try again in {hint}s"
+        )
     # Mistral reports a capacity shortage and a spent quota with the same
     # status, so the body decides the wording. They call for opposite
     # reactions: a capacity refusal clears on its own and the retry ladder is
     # already working on it, while a spent quota means waiting for a reset.
     if is_capacity_shortage(error):
-        return "Provider busy, retrying"
+        return _with_retry("Provider busy", retry_in) if retry_in else (
+            "Provider busy, retrying"
+        )
     if "429" in text:
-        return "Rate limited, try again shortly"
+        return _with_retry("Rate limited, try again shortly", retry_in)
     if isinstance(error, ProviderUnavailableError):
-        return "No connection to the transcription service"
+        return _with_retry("No connection to the transcription service", retry_in)
     if "too large" in text.lower():
-        return "Recording is too long to transcribe"
+        return _with_retry("Recording is too long to transcribe", retry_in)
     if "api key" in text.lower():
-        return "API key is missing or rejected"
+        return _with_retry("API key is missing or rejected", retry_in)
     if "microphone" in text.lower():
-        return "Microphone access is blocked in System Settings"
+        return _with_retry("Microphone access is blocked in System Settings", retry_in)
 
     # Unrecognized: show the provider's own words rather than swallowing them.
     # The overlay collapses whitespace and truncates, so a long one is safe.
-    return text
+    return _with_retry(text, retry_in)
 
 
 def process_pending_recording(path, job_id, mode):
@@ -662,6 +752,7 @@ def process_pending_recording(path, job_id, mode):
     text = None
     notice = None
     rejected = False
+    retry_in = None
     try:
         if mode == MODE_TRANSLATE:
             text = transcriber.transcribe_and_translate_sync(path)
@@ -678,10 +769,12 @@ def process_pending_recording(path, job_id, mode):
         rejected = True
     except TranscriptionError as e:
         log(f"transcription error {path.name}: {e}")
-        notice = error_notice(e)
+        retry_in = _schedule_pending_retry(path, e)
+        notice = error_notice(e, retry_in=retry_in)
     except Exception as e:
         log(f"processing error {path.name}: {e}")
-        notice = error_notice(e)
+        retry_in = _schedule_pending_retry(path, e)
+        notice = error_notice(e, retry_in=retry_in)
 
     # Claim ownership of THIS job — exact job_id match. A bare state check
     # would also accept a *newer* job's "processing" state and let a stale
@@ -766,6 +859,13 @@ def recover_pending_recordings():
     if not paths:
         return
 
+    # Only files whose backoff has elapsed. The loop wakes every few seconds;
+    # without this it would hammer a provider that just refused, and fill the
+    # log with a "found N pending" line each time.
+    paths = _due_pending(paths)
+    if not paths:
+        return
+
     cutoff = time.time() - PENDING_AGE_WARN_DAYS * 86400
     stale = sum(1 for p in paths if p.stat().st_mtime < cutoff)
     if stale:
@@ -790,8 +890,11 @@ def recover_pending_recordings():
             else:
                 text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
         except ProviderUnavailableError as e:
-            # Provider is unreachable; the remaining files stay pending and
-            # the background retry loop will pick them up once it's back.
+            # The network is out, not this file's fault, so it must NOT count
+            # toward quarantine. Put the rest of the queue on the backoff and
+            # stop the pass — hammering a dead link helps nobody.
+            for remaining in paths[index:]:
+                _schedule_pending_retry(remaining, e)
             log(f"recovery paused: provider unreachable ({e}); "
                 f"{len(paths) - index} recording(s) pending")
             break
@@ -815,7 +918,8 @@ def recover_pending_recordings():
                 )
                 _clear_pending_failures(path.name)
             else:
-                log(f"recovery skipping {path.name}: {e}")
+                wait = _schedule_pending_retry(path, e)
+                log(f"recovery retrying {path.name} in {wait}s: {e}")
             skipped += 1
             continue
         _clear_pending_failures(path.name)
@@ -841,6 +945,21 @@ def recover_pending_recordings():
         except Exception as e:
             log(f"recovery clipboard error: {e}")
             return  # leave all files in pending so a future startup can retry
+
+        # The clipboard just changed under the user, who may be mid-task in
+        # another window. Saying so is the difference between a recovered
+        # dictation and a confusing paste later on. Kept out of the block
+        # above: the text is already safely on the clipboard, so a pill that
+        # fails to draw must not strand the files it came from.
+        try:
+            overlay.flash_notice(
+                f"Recovered {len(combined)} chars to clipboard"
+                if len(non_empty) == 1
+                else f"Recovered {len(non_empty)} recordings "
+                     f"({len(combined)} chars) to clipboard"
+            )
+        except Exception as e:
+            log(f"recovery notice error: {e}")
 
     # Delete files only after a successful clipboard write (or on filtered-empty results)
     for path, _ in recovered:

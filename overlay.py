@@ -14,6 +14,7 @@ from AppKit import (
     NSWindowCollectionBehaviorStationary,
     NSAnimationContext,
     NSInsetRect, NSViewLayerContentsRedrawDuringViewResize,
+    NSSound,
 )
 from Foundation import NSMakeRect, NSMakePoint, NSMakeSize, NSAttributedString, NSTimer
 from Quartz import CAMediaTimingFunction
@@ -74,6 +75,13 @@ LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # Mode label — medium gray
 # Error message type — same rounded family as the mode label, sized to read at
 # a glance without dominating the screen.
 ERROR_TEXT_RGBA = (1.0, 1.0, 1.0, 0.92)
+# Modes whose pill is a block of text rather than a glyph. "notice" is drawn
+# exactly like "error" — same dark pill, same type — because the difference
+# that matters to the user is the words, not a color they would have to learn.
+_MESSAGE_MODES = ("error", "notice")
+# A recovered transcript replaces the clipboard, which is easy to miss while
+# working in another window. The sound is what makes it noticeable.
+NOTICE_SOUND = "Glass"
 
 FILL = None
 EDGE = None
@@ -299,7 +307,7 @@ class OverlayView(NSView):
         # The glyph layer spans the whole panel; the pill occupies _full_frame,
         # so the glyph is drawn in pill-local coordinates and the label sits in
         # the margin above it.
-        if self._label and self._mode != "error":
+        if self._label and self._mode not in _MESSAGE_MODES:
             s = NSAttributedString.alloc().initWithString_attributes_(self._label, LABEL_ATTRS)
             sz = s.size()
             x = (PANEL_W - sz.width) / 2.0
@@ -308,7 +316,7 @@ class OverlayView(NSView):
 
         cx, cy = PANEL_W / 2.0, PAD + H / 2.0
 
-        if self._mode == "error":
+        if self._mode in _MESSAGE_MODES:
             if self._message:
                 # Center the wrapped text on the pill the surface animated to,
                 # so text and pill can never disagree about where they are.
@@ -396,6 +404,18 @@ class Overlay:
             duration = _read_time(message) if message else ERROR_FLASH_SEC
         AppHelper.callAfter(self._flash_error, message, duration, token)
 
+    def flash_notice(self, message, duration=None, sound=True):
+        """
+        Show a neutral message pill — used when a recovered transcript lands in
+        the clipboard. Deliberately untokened: a recovery is not part of any
+        recording cycle, and the user needs to know their clipboard changed
+        even if they have since started dictating again.
+        """
+        message = _clean_message(message)
+        if duration is None:
+            duration = _read_time(message)
+        AppHelper.callAfter(self._flash_notice, message, duration, sound)
+
     def hide(self, token=None):
         """
         Take the pill down. With a token it is taken down only if that token
@@ -416,6 +436,23 @@ class Overlay:
         gen = self._gen
         # daemon, so a pending hide never holds the process open on shutdown:
         # the pill is going away with the app anyway.
+        timer = threading.Timer(
+            duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)
+        )
+        timer.daemon = True
+        timer.start()
+
+    def _flash_notice(self, message, duration, sound):
+        if sound:
+            try:
+                tone = NSSound.soundNamed_(NOTICE_SOUND)
+                if tone is not None:
+                    tone.play()
+            except Exception:
+                # A missing system sound must never cost the user the notice.
+                pass
+        self._show("notice", None, message, None)
+        gen = self._gen
         timer = threading.Timer(
             duration, lambda: AppHelper.callAfter(self._hide_if_current, gen)
         )
