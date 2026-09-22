@@ -77,6 +77,20 @@ Conventions in this codebase:
   `main.py` (Python `logging` with `RotatingFileHandler`) or
   `logging.getLogger("openspeaksy")` in modules. Never log transcription
   contents — log lengths, paths, errors only. **Never log the API key.**
+- **A failed recording is retried, not dropped**: the live worker schedules it
+  via `_schedule_pending_retry` and the pill shows the countdown
+  (`error_notice(error, retry_in=)`). Three per-file dicts pace this and must
+  not be conflated: `_pending_failures` (gates quarantine, ignores outages),
+  `_pending_attempt_count` (paces `PENDING_RETRY_BACKOFF_SEC`, counts
+  everything), `_pending_next_attempt` (due time). `pending_retry_loop` wakes
+  every `PENDING_RETRY_POLL_SEC` but only acts on `_due_pending`.
+  Transport errnos (EPIPE/ECONNRESET/ETIMEDOUT/ENOTCONN) are
+  `ProviderUnavailableError`, which pauses the sweep instead of counting the
+  file as poison — do not reclassify them without re-reading why.
+- **Recovery announces its clipboard write** with `overlay.flash_notice` and a
+  sound, since it lands while the user may be elsewhere. Keep that call
+  outside the clipboard try-block: the text is already safe, and a pill that
+  cannot draw must not strand the audio.
 - **Recovery is read-only and runs synchronously before the event tap**:
   startup recovery copies the transcript to the clipboard but **never**
   synthesizes Cmd+V. Focus at login is unrelated to the dictation context.
