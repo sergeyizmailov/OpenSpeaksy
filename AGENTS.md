@@ -20,7 +20,7 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
    see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
-6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish.
+6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish. Tapping right Control cancels a transcription in flight (the audio is kept); tapping it twice quickly retries everything queued.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
@@ -77,6 +77,16 @@ Conventions in this codebase:
   `main.py` (Python `logging` with `RotatingFileHandler`) or
   `logging.getLogger("openspeaksy")` in modules. Never log transcription
   contents — log lengths, paths, errors only. **Never log the API key.**
+- **Cancel is a state-machine primitive**: right Control (`CANCEL_KEYCODE`)
+  calls `on_cancel_tap` → `cancel_everything()` / `resume_everything()`. One
+  tap holds the queue in `_pending_cancelled` (which `_due_pending` skips); two
+  taps inside `CANCEL_DOUBLE_TAP_SEC` release it. Cancelling a live job bumps
+  `current_job_id` so its worker aborts, and a cancel while recording routes
+  through `on_key_up` first so the audio still reaches disk. It must never
+  delete a recording — only the retries stop.
+  The tap subscribes to `kCGEventFlagsChanged` ONLY, so cancel has to be a
+  modifier: an ordinary key (Escape, Space) would mean observing every
+  keystroke the user types. Don't "improve" this into a normal key.
 - **A failed recording is retried, not dropped**: the live worker schedules it
   via `_schedule_pending_retry` and the pill shows the countdown
   (`error_notice(error, retry_in=)`). Three per-file dicts pace this and must
