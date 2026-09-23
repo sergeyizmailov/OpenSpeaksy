@@ -44,6 +44,10 @@ Hold the key, speak, release. The text pastes directly into the active field and
 | **Right ⇧** | **Translate (PL)** | Dictate in Russian → pastes natural, idiomatic Polish. |
 | **Caps Lock** | **Cancel** | Tap to stop a transcription that has been running more than 10 seconds. The audio is kept — only the automatic retries stop. Tap twice quickly to retry everything waiting. |
 
+Pasted text reads like a chat message: the closing full stop is dropped
+(stops between sentences, `?` and `!` stay), and translations use a plain
+hyphen `-` in place of long dashes.
+
 The 10-second wait is deliberate: a normal transcription takes a second or
 two, so a capital letter typed just after speaking never interrupts one. A tap
 with nothing stuck to act on does nothing at all.

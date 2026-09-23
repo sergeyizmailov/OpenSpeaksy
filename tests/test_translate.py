@@ -219,7 +219,7 @@ def test_translate_makes_exactly_one_llm_call(transcriber_module, tmp_path):
     with patch.object(t, "urlopen", side_effect=fake_urlopen) as mock:
         result = t.Transcriber().transcribe_and_translate_sync(wav)
 
-    assert result == long_enough + " "
+    assert result == long_enough[:-1] + " "
     assert mock.call_count == 2
 
 
@@ -239,5 +239,66 @@ def test_polish_makes_exactly_one_llm_call(transcriber_module, tmp_path):
     with patch.object(t, "urlopen", side_effect=fake_urlopen) as mock:
         result = t.Transcriber().transcribe_to_polish_sync(wav)
 
-    assert result == long_enough + " "
+    assert result == long_enough[:-1] + " "
     assert mock.call_count == 2
+
+
+@pytest.mark.parametrize("raw, pasted", [
+    ("Wait — that's not it.", "Wait - that's not it"),
+    ("Wait—that's not it", "Wait - that's not it"),
+    ("Pages 10–20 and 30 – 40", "Pages 10-20 and 30-40"),
+    ("— Hi.\n— Hello.", "- Hi.\n- Hello"),
+    ("First one. Second one.", "First one. Second one"),
+    ("Really?", "Really?"),
+    ("Stop!", "Stop!"),
+    ("And then...", "And then..."),
+    ("Already-hyphenated word", "Already-hyphenated word"),
+])
+def test_finish_translation_style(transcriber_module, raw, pasted):
+    assert transcriber_module._finish_translation(raw) == pasted
+
+
+@pytest.mark.parametrize("method", [
+    "transcribe_and_translate_sync",
+    "transcribe_to_polish_sync",
+])
+def test_both_translate_modes_apply_the_paste_style(
+    transcriber_module, tmp_path, method
+):
+    t = transcriber_module
+    wav = _write_silent_wav(tmp_path)
+
+    def fake_urlopen(req, timeout):
+        if "audio/transcriptions" in req.full_url:
+            return _ok_transcribe("Ну вот, всё готово.")
+        return _ok_chat("Well — it's done.")
+
+    with patch.object(t, "urlopen", side_effect=fake_urlopen):
+        result = getattr(t.Transcriber(), method)(wav)
+
+    assert result == "Well - it's done "
+
+
+def test_raw_transcript_keeps_its_full_stop_for_the_translator(
+    transcriber_module, tmp_path
+):
+    """The stop is dropped at paste time, not from what the translator reads."""
+    t = transcriber_module
+    wav = _write_silent_wav(tmp_path)
+    with patch.object(t, "urlopen", return_value=_ok_transcribe("Всё готово.")):
+        assert t.Transcriber().transcribe_wav_sync(wav) == "Всё готово. "
+
+
+def test_a_translation_of_only_a_full_stop_pastes_nothing(
+    transcriber_module, tmp_path
+):
+    t = transcriber_module
+    wav = _write_silent_wav(tmp_path)
+
+    def fake_urlopen(req, timeout):
+        if "audio/transcriptions" in req.full_url:
+            return _ok_transcribe("Ну.")
+        return _ok_chat(".")
+
+    with patch.object(t, "urlopen", side_effect=fake_urlopen):
+        assert t.Transcriber().transcribe_and_translate_sync(wav) == ""

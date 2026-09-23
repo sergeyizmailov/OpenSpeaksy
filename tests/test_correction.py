@@ -66,7 +66,7 @@ def test_long_transcript_is_corrected(transcriber_module, tmp_path):
     t = transcriber_module
     wav = _write_loud_wav(tmp_path)
     with patch.object(t, "urlopen", side_effect=[_ok_transcribe(LONG), _ok_chat(FIXED)]):
-        assert t.Transcriber().transcribe_and_correct_sync(wav) == FIXED + " "
+        assert t.Transcriber().transcribe_and_correct_sync(wav) == FIXED[:-1] + " "
 
 
 def test_correction_uses_its_own_model_and_temperature(transcriber_module, tmp_path):
@@ -93,7 +93,7 @@ def test_shipped_default_is_off(monkeypatch, tmp_path):
     assert t.CORRECT_DICTATION is False
     wav = _write_loud_wav(tmp_path)
     with patch.object(t, "urlopen", side_effect=[_ok_transcribe(LONG)]) as mock:
-        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG + " "
+        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG[:-1] + " "
     assert mock.call_count == 1
 
 
@@ -110,7 +110,7 @@ def test_switch_off_skips_the_round_trip(transcriber_module, tmp_path, monkeypat
     monkeypatch.setattr(t, "CORRECT_DICTATION", False)
     wav = _write_loud_wav(tmp_path)
     with patch.object(t, "urlopen", side_effect=[_ok_transcribe(LONG)]) as mock:
-        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG + " "
+        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG[:-1] + " "
     assert mock.call_count == 1
 
 
@@ -121,7 +121,7 @@ def test_failed_correction_falls_back_to_raw_transcript(transcriber_module, tmp_
     with patch.object(
         t, "urlopen", side_effect=[_ok_transcribe(LONG), error, error, error]
     ):
-        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG + " "
+        assert t.Transcriber().transcribe_and_correct_sync(wav) == LONG[:-1] + " "
 
 
 def test_language_is_passed_through_to_transcription(transcriber_module, tmp_path):
@@ -145,7 +145,7 @@ def test_translate_mode_does_not_run_the_correction_pass(transcriber_module, tmp
     with patch.object(
         t, "urlopen", side_effect=[_ok_transcribe(LONG), _ok_chat("Short one.")]
     ) as mock:
-        assert t.Transcriber().transcribe_and_translate_sync(wav) == "Short one. "
+        assert t.Transcriber().transcribe_and_translate_sync(wav) == "Short one "
     assert mock.call_count == 2  # transcription + translation only
 
 
@@ -202,3 +202,19 @@ def test_length_guard_only_catches_wholesale_rewrites():
     assert t._accepted_correction(original, "x" * 180) is None
     assert t._accepted_correction(original, "x" * 55) == "x" * 55
     assert t._accepted_correction(original, "x" * 30) is None
+
+
+@pytest.mark.parametrize("raw, pasted", [
+    ("Всё готово.", "Всё готово "),
+    ("Первое. Второе.", "Первое. Второе "),
+    ("Готово?", "Готово? "),
+    ("Ну и вот...", "Ну и вот... "),
+    ("Это — важно.", "Это — важно "),
+])
+def test_dictation_drops_only_the_closing_full_stop(
+    transcriber_module, tmp_path, raw, pasted
+):
+    t = transcriber_module
+    wav = _write_loud_wav(tmp_path)
+    with patch.object(t, "urlopen", return_value=_ok_transcribe(raw)):
+        assert t.Transcriber().transcribe_and_correct_sync(wav) == pasted

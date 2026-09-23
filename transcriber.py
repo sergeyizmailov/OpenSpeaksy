@@ -3,6 +3,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import socket
 import ssl
 import struct
@@ -482,6 +483,42 @@ def _chat_text(result):
     return content.strip()
 
 
+_LONG_DASH_BETWEEN_DIGITS = re.compile(r"(?<=\d)[ \t]*[–—][ \t]*(?=\d)")
+_LONG_DASH = re.compile(r"[ \t]*[–—][ \t]*")
+_LINE_LEADING_DASH = re.compile(r"(?m)^ - ")
+
+
+def _drop_closing_full_stop(text):
+    """
+    Drop one closing full stop so a paste reads like a chat message. Stops
+    between sentences, "?", "!" and an ellipsis stay.
+    """
+    text = text.strip()
+    if text.endswith(".") and not text.endswith(".."):
+        text = text[:-1].rstrip()
+    return text
+
+
+def _finish_translation(text):
+    """
+    Apply the paste style in code rather than trusting the prompt alone: the
+    model still emits long dashes now and then despite being told not to.
+
+    Em and en dashes become a plain hyphen ("10–20" -> "10-20", "a — b" ->
+    "a - b"), and the closing full stop is dropped.
+    """
+    text = _LONG_DASH_BETWEEN_DIGITS.sub("-", text)
+    text = _LONG_DASH.sub(" - ", text)
+    text = _LINE_LEADING_DASH.sub("- ", text)
+    return _drop_closing_full_stop(text)
+
+
+def _finish_dictation(text):
+    """Dictation keeps its dashes as spoken; only the closing stop goes."""
+    text = _drop_closing_full_stop(text)
+    return text + " " if text else ""
+
+
 def _accepted_correction(original, corrected):
     """
     Return the corrected transcript, or None when the model did something other
@@ -621,7 +658,7 @@ class Transcriber:
         text = self.transcribe_wav_sync(wav_path, language=language)
         stripped = text.rstrip()
         if not CORRECT_DICTATION or len(stripped) < CORRECTION_MIN_CHARS:
-            return text
+            return _finish_dictation(text)
 
         started = time.monotonic()
         try:
@@ -630,7 +667,7 @@ class Transcriber:
             # The raw transcript is already usable. Never lose a recording
             # because the optional polish step failed.
             logger.warning(f"correction failed, using raw transcript: {e}")
-            return text
+            return _finish_dictation(text)
 
         accepted = _accepted_correction(stripped, corrected)
         logger.info(
@@ -639,8 +676,8 @@ class Transcriber:
             f"{len(stripped)} -> {len(corrected)} chars"
         )
         if accepted is None:
-            return text
-        return accepted + " "
+            return _finish_dictation(text)
+        return _finish_dictation(accepted)
 
     def _correct_transcript_mistral(self, text):
         return self._chat_completion(
@@ -660,7 +697,7 @@ class Transcriber:
         ).rstrip()
         if not russian:
             return ""
-        english = self._translate_mistral(russian)
+        english = _finish_translation(self._translate_mistral(russian))
         if not english:
             return ""
         return english + " "
@@ -674,7 +711,7 @@ class Transcriber:
         ).rstrip()
         if not source:
             return ""
-        polish = self._polish_mistral(source)
+        polish = _finish_translation(self._polish_mistral(source))
         if not polish:
             return ""
         return polish + " "
