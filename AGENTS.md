@@ -5,21 +5,32 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 
 ## If the user asks you to install OpenSpeaksy
 
-1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
-2. Make sure the user has a Mistral API key
-   (<https://console.mistral.ai/api-keys>). It is required for both
-   speech-to-text (Voxtral) and translation.
-3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
-   key and write it into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
-   `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
-   in the environment before running to skip its prompt.
-4. After install, the user must manually grant **Input Monitoring** and
-   **Accessibility** to `<repo>/venv/bin/python` in System Settings → Privacy
-   & Security. Tell them which path to authorize. Do not try to do this
-   yourself — there is no scripted path.
-5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
-   see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
-6. Tell the user to hold right Command to dictate, press right Option + right Command for hands-free dictation (tap right Command to stop), or hold right Shift to dictate Russian and paste English. Tapping Caps Lock cancels a transcription in flight (the audio is kept); tapping it twice quickly retries everything queued.
+1. Confirm the host is **macOS** (`uname -s` prints `Darwin`).
+2. Clone to `~/OpenSpeaksy` unless the user names another place:
+   `git clone https://github.com/slilbudget/OpenSpeaksy.git ~/OpenSpeaksy`.
+3. Ask the user for their Mistral API key
+   (<https://console.mistral.ai/api-keys>, free plan works). It covers both
+   speech-to-text and translation.
+4. Run the installer with the key in the environment, since its own prompt
+   is a hidden `read` you cannot answer:
+   `MISTRAL_API_KEY=... ./scripts/install.sh` from the repo root. The key is
+   written only into `~/Library/LaunchAgents/com.openspeaksy.plist`, never to
+   the repo. If Homebrew is missing, the installer installs it and needs the
+   user's password: ask them to run that one step in their own terminal.
+5. Tell the user to open System Settings → Privacy & Security and allow
+   `<repo>/venv/bin/python` under **Input Monitoring** and **Accessibility**.
+   There is no scripted path; do not try. Without Input Monitoring the app
+   exits and launchd relaunches it every few seconds, so the grant is picked
+   up with no restart.
+6. Verify in `~/Library/Logs/com.openspeaksy/main.log`: expect
+   `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`, then
+   `OpenSpeaksy running` once Input Monitoring is granted. `post events
+   trusted: True` earlier in the log confirms Accessibility, which pasting
+   needs.
+7. Tell the user: hold right Command to dictate; right Option + right Command
+   for hands-free, tap right Command to stop; hold right Shift to speak
+   Russian and paste English; Caps Lock cancels a stuck transcription (audio
+   kept), double tap retries the queue.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
