@@ -7,7 +7,7 @@
 A free, open-source speech-to-text script for macOS, built on [Mistral](https://mistral.ai).<br>
 Bring your own API key. No app to buy, no subscription, no account.
 
-[![CI](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/sergeyizmailov/OpenSpeaksy/actions/workflows/ci.yml)
+[![CI](https://github.com/slilbudget/OpenSpeaksy/actions/workflows/ci.yml/badge.svg)](https://github.com/slilbudget/OpenSpeaksy/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 </div>
@@ -32,7 +32,7 @@ The text also stays in your clipboard. Short taps do nothing, so these keys stil
 You need macOS 13+ and a [Mistral API key](https://console.mistral.ai/api-keys). Mistral has a free plan that needs no card.
 
 ```bash
-git clone https://github.com/sergeyizmailov/OpenSpeaksy.git ~/OpenSpeaksy
+git clone https://github.com/slilbudget/OpenSpeaksy.git ~/OpenSpeaksy
 cd ~/OpenSpeaksy
 ./scripts/install.sh
 ```

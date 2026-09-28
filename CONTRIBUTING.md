@@ -19,7 +19,7 @@ focused on macOS dictation — please read this before opening a PR.
 - Major framework rewrites without prior discussion.
 
 A Windows or Linux port is welcome but should live in a separate fork or a
-clearly-isolated branch — see [Issue #1](https://github.com/sergeyizmailov/OpenSpeaksy/issues/1).
+clearly-isolated branch — see [Issue #1](https://github.com/slilbudget/OpenSpeaksy/issues/1).
 
 ## Before sending a PR
 
