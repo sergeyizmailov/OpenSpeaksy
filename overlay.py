@@ -59,7 +59,7 @@ ALPHA_IN = 0.18
 _EASE = None
 
 # One component, one look. All modes are the SAME dark pill; translate and
-# polish only add a thin text label above it (dictate has none). The fill is a
+# hands-free only add a thin text label above it. The fill is a
 # flat, semi-transparent dark color (static — no blur, no adaptation), so the
 # light content always reads on it. Error keeps the dark fill and a coral glyph.
 FILL_RGBA = (36 / 255, 36 / 255, 36 / 255, 1.0)    # Dark pill fill — #242424 neutral gray-black
@@ -67,7 +67,7 @@ EDGE_RGBA = (1.0, 1.0, 1.0, 0.14)      # Soft light hairline rim
 BAR_RGBA = (190 / 255, 190 / 255, 190 / 255, 1.0)    # Bars / spinner — #bebebe
 BORDER_W = 1.0
 
-# Mode label ("English" / "Polish") — small soft rounded type.
+# Mode label ("English" / "Hands-free") — small soft rounded type.
 LABEL_SIZE = 9.5
 LABEL_TRACKING = 0.2       # Slight letter spacing for an airy, minimal look
 LABEL_RGBA = (1.0, 1.0, 1.0, 0.60)     # Mode label — medium gray

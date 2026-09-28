@@ -183,7 +183,7 @@ def test_a_healthy_transcription_is_not_cancellable_yet(app, monkeypatch, tmp_pa
     The whole point of the grace window: a normal transcription takes a second
     or two, and a capital letter typed in that moment must not kill it.
     """
-    wav = _wav(tmp_path / "20260922-030007-a.dictate.wav")
+    _wav(tmp_path / "20260922-030007-a.dictate.wav")
     monkeypatch.setattr(main, "state", "processing")
     monkeypatch.setattr(main, "state_ts", 100.0)
     monkeypatch.setattr(

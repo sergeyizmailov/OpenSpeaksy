@@ -23,6 +23,8 @@ from Quartz import (
     kCGEventFlagsChanged, kCGKeyboardEventKeycode,
     kCGEventFlagMaskCommand, kCGHIDEventTap,
     kCGEventTapDisabledByTimeout, kCGEventTapDisabledByUserInput,
+    CGEventSourceSecondsSinceLastEventType, kCGEventSourceStateHIDSystemState,
+    kCGEventKeyDown, kCGEventLeftMouseDown, kCGEventRightMouseDown,
 )
 from CoreFoundation import (
     CFRunLoopAddSource, CFRunLoopGetCurrent, CFRunLoopRun, kCFRunLoopDefaultMode,
@@ -38,9 +40,6 @@ from transcriber import (
     MISTRAL_CORRECTION_MODEL,
     MISTRAL_MODEL,
     MISTRAL_TRANSLATION_MODEL,
-    POLISH_STT_BACKEND,
-    STT_BACKEND,
-    SUPPORTED_STT_BACKENDS,
     Transcriber,
     TranscriptionError,
     ProviderUnavailableError,
@@ -53,10 +52,11 @@ from overlay import Overlay
 # To use a different modifier, change both constants — see README for keycode/flag table.
 HOTKEY_KEYCODE   = 0x36   # right Command
 HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
-TRANSLATE_KEYCODE = 0x3D  # right Option — dictate Russian, paste English
-TRANSLATE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
-POLISH_KEYCODE = 0x3C   # right Shift — dictate Russian, paste Polish
-POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
+TRANSLATE_KEYCODE = 0x3C  # right Shift — dictate Russian, paste English
+TRANSLATE_FLAG    = 0x04  # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
+# Right Option + right Command, in either order, starts hands-free dictation.
+HANDS_FREE_KEYCODE = 0x3D  # right Option
+HANDS_FREE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
 # Cancel. A modifier on purpose: the event tap subscribes to
 # kCGEventFlagsChanged only, so an ordinary key like Escape or Space would mean
 # subscribing to every keystroke the user types. Space would also fire
@@ -65,7 +65,7 @@ POLISH_FLAG    = 0x04   # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift f
 # Caps Lock, chosen by elimination on a MacBook keyboard: there is no right
 # Control, every LEFT modifier is part of everyday shortcuts (binding one would
 # make Cmd+C cancel a transcription), the other right-hand modifiers are the
-# three dictation hotkeys, and fn already switches this user's input source.
+# dictation hotkeys, and fn already switches this user's input source.
 # Verified on the real keyboard rather than from a header: keycode 0x39, flags
 # 0x00010100. Caps Lock still toggles capitals — set it to "No Action" in
 # System Settings > Keyboard > Modifier Keys to avoid that.
@@ -79,11 +79,16 @@ CANCEL_DOUBLE_TAP_SEC = 0.6
 # typing a capital letter, not asking to cancel — and silently killing a
 # working transcription would be far worse than ignoring the key.
 CANCEL_GRACE_SEC = 10.0
+# Hands-free dictation: right Option + right Command records without either
+# key being held, and a tap of right Command stops it. Holding the key blocks
+# ordinary clicks, since macOS reads them as Cmd+click, and a long dictation is
+# tiring to hold. Pressing right Option during a held dictation switches it to
+# hands-free without losing what was already said.
+HANDS_FREE_LABEL = "Hands-free"
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
-MODE_POLISH    = "polish"
 # Overlay label per mode; dictate has none.
-MODE_LABELS = {MODE_TRANSLATE: "English", MODE_POLISH: "Polish"}
+MODE_LABELS = {MODE_TRANSLATE: "English"}
 V_KEY = 0x09
 # Ignore accidental taps shorter than 0.8 seconds.
 MIN_AUDIO_SAMPLES = 12800
@@ -293,6 +298,10 @@ current_job_id = 0
 # the OTHER hotkey mid-record can't end the cycle. Watchdog also clears it on reset.
 current_hotkey = None
 current_mode = None
+# Whether the recording cycle is hands-free. Written by
+# _begin_recording for every cycle (and flipped by _latch_hands_free), read only while state is "recording",
+# so the resets that leave "recording" never have to clear it.
+current_hands_free = False
 # Pending WAV owned by the in-flight processing job. Set in on_key_up before
 # the worker spawns; used only for watchdog log messages. Cleared when the
 # job is claimed complete or a new cycle begins.
@@ -550,7 +559,7 @@ def parse_pending_mode(path):
     or MODE_DICTATE for legacy files (pre-upgrade) with no mode segment.
     """
     stem = path.stem  # strips final .wav
-    for mode in (MODE_TRANSLATE, MODE_POLISH, MODE_DICTATE):
+    for mode in (MODE_TRANSLATE, MODE_DICTATE):
         if stem.endswith(f".{mode}"):
             return mode
     return MODE_DICTATE
@@ -788,8 +797,6 @@ def process_pending_recording(path, job_id, mode):
     try:
         if mode == MODE_TRANSLATE:
             text = transcriber.transcribe_and_translate_sync(path)
-        elif mode == MODE_POLISH:
-            text = transcriber.transcribe_to_polish_sync(path)
         else:
             text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
     except RequestRejectedError as e:
@@ -917,8 +924,6 @@ def recover_pending_recordings():
         try:
             if mode == MODE_TRANSLATE:
                 text = transcriber.transcribe_and_translate_sync(path)
-            elif mode == MODE_POLISH:
-                text = transcriber.transcribe_to_polish_sync(path)
             else:
                 text = transcriber.transcribe_and_correct_sync(path, language=DICTATE_LANGUAGE)
         except ProviderUnavailableError as e:
@@ -1088,7 +1093,7 @@ def resume_everything():
         return len(_all_pending_names())
 
 
-def _begin_recording(keycode, mode):
+def _begin_recording(keycode, mode, hands_free=False):
     """
     Atomic idle→recording transition that also latches the hotkey and mode
     in a single critical section. Splitting the state flip and the
@@ -1097,7 +1102,7 @@ def _begin_recording(keycode, mode):
     Returns True on success.
     """
     global state, state_ts, current_hotkey, current_mode
-    global current_wav_path
+    global current_wav_path, current_hands_free
     with state_lock:
         if state != "idle":
             return False
@@ -1105,6 +1110,7 @@ def _begin_recording(keycode, mode):
         state_ts = time.monotonic()
         current_hotkey = keycode
         current_mode = mode
+        current_hands_free = hands_free
         current_wav_path = None
         return True
 
@@ -1125,8 +1131,8 @@ def _abandon_recording_cycle():
         current_mode = None
 
 
-def on_key_down(keycode, mode):
-    if not _begin_recording(keycode, mode):
+def on_key_down(keycode, mode, hands_free=False):
+    if not _begin_recording(keycode, mode, hands_free):
         return
     if _microphone_access_is_blocked():
         log(
@@ -1137,8 +1143,11 @@ def on_key_down(keycode, mode):
         return
     try:
         recorder.start()
-        log(f"recording started: mode={mode}")
-        overlay.show("recording", label=MODE_LABELS.get(mode))
+        log(f"recording started: mode={mode}{'; hands-free' if hands_free else ''}")
+        overlay.show(
+            "recording",
+            label=HANDS_FREE_LABEL if hands_free else MODE_LABELS.get(mode),
+        )
     except Exception as e:
         log(f"recorder.start error: {e}")
         _abandon_recording_cycle()
@@ -1253,6 +1262,100 @@ def on_key_up(keycode):
             overlay.flash_error("Could not start transcription")
 
 
+def _other_input_since(started):
+    """
+    Whether any ordinary key or mouse button went down after `started`
+    (a time.monotonic() value). Reads the system's per-type idle counters, so
+    the event tap never has to see the keystrokes themselves.
+    """
+    elapsed = time.monotonic() - started
+    return any(
+        CGEventSourceSecondsSinceLastEventType(
+            kCGEventSourceStateHIDSystemState, kind
+        ) < elapsed
+        for kind in (kCGEventKeyDown, kCGEventLeftMouseDown, kCGEventRightMouseDown)
+    )
+
+
+# Touched only from the event-tap thread.
+_hands_free_started_at = None
+_hands_free_stop_pressed_at = None
+
+
+def _hands_free_recording():
+    with state_lock:
+        return (
+            state == "recording"
+            and current_hands_free
+            and current_hotkey == HOTKEY_KEYCODE
+        )
+
+
+def _latch_hands_free():
+    """Turn a held right-Command dictation into a hands-free one."""
+    global current_hands_free
+    with state_lock:
+        if (
+            state == "recording"
+            and current_hotkey == HOTKEY_KEYCODE
+            and not current_hands_free
+        ):
+            current_hands_free = True
+            return True
+        return False
+
+
+def on_hands_free_key(pressed):
+    """Right Option: only meaningful while right Command is dictating."""
+    global _hands_free_started_at, _hands_free_stop_pressed_at
+    if pressed and _latch_hands_free():
+        _hands_free_started_at = time.monotonic()
+        _hands_free_stop_pressed_at = None
+        log("recording switched to hands-free")
+        overlay.show("recording", label=HANDS_FREE_LABEL)
+
+
+def on_dictate_key(pressed, option_held):
+    """
+    Right Command: hold to dictate, or press it with right Option held for
+    hands-free, then tap it again to stop. The stop tap is only honoured on
+    release, and only if nothing was typed or clicked while it was down, so
+    right Command still works as a shortcut modifier during a hands-free
+    recording.
+
+    The Option state comes from this event's own flags rather than from
+    remembered key-downs: a lost Option release would otherwise turn every
+    later dictation into a hands-free one.
+    """
+    global _hands_free_started_at, _hands_free_stop_pressed_at
+    now = time.monotonic()
+
+    if _hands_free_recording():
+        if pressed:
+            _hands_free_stop_pressed_at = now
+            return
+        stop_pressed_at = _hands_free_stop_pressed_at
+        started_at = _hands_free_started_at
+        _hands_free_stop_pressed_at = None
+        _hands_free_started_at = None
+        if stop_pressed_at is not None:
+            if not _other_input_since(stop_pressed_at):
+                on_key_up(HOTKEY_KEYCODE)
+        elif started_at is not None and _other_input_since(started_at):
+            # A key went down while the combination was held, so it was an
+            # Option + Command shortcut, not a request to dictate.
+            on_key_up(HOTKEY_KEYCODE)
+        return
+
+    if not pressed:
+        on_key_up(HOTKEY_KEYCODE)
+        return
+
+    _hands_free_stop_pressed_at = None
+    _hands_free_started_at = now if option_held else None
+    on_key_down(HOTKEY_KEYCODE, MODE_DICTATE, hands_free=option_held)
+
+
 def tap_callback(proxy, event_type, event, refcon):
     # Wrap entire body — Python exceptions from here propagate into the
     # CGEventTap C callback and can take down the run loop
@@ -1266,21 +1369,16 @@ def tap_callback(proxy, event_type, event, refcon):
         # Device-dependent flag distinguishes left vs right modifier —
         # the shared mask (e.g. kCGEventFlagMaskCommand) catches both
         if keycode == HOTKEY_KEYCODE:
-            pressed = bool(CGEventGetFlags(event) & HOTKEY_FLAG)
-            if pressed:
-                on_key_down(keycode, MODE_DICTATE)
-            else:
-                on_key_up(keycode)
+            flags = CGEventGetFlags(event)
+            on_dictate_key(
+                bool(flags & HOTKEY_FLAG), bool(flags & HANDS_FREE_FLAG)
+            )
+        elif keycode == HANDS_FREE_KEYCODE:
+            on_hands_free_key(bool(CGEventGetFlags(event) & HANDS_FREE_FLAG))
         elif keycode == TRANSLATE_KEYCODE:
             pressed = bool(CGEventGetFlags(event) & TRANSLATE_FLAG)
             if pressed:
                 on_key_down(keycode, MODE_TRANSLATE)
-            else:
-                on_key_up(keycode)
-        elif keycode == POLISH_KEYCODE:
-            pressed = bool(CGEventGetFlags(event) & POLISH_FLAG)
-            if pressed:
-                on_key_down(keycode, MODE_POLISH)
             else:
                 on_key_up(keycode)
         elif keycode == CANCEL_KEYCODE:
@@ -1336,16 +1434,6 @@ def configuration_error():
     the config is usable. Pure so the rules can be tested without booting the
     event tap: main() only logs whatever this returns and exits.
     """
-    if STT_BACKEND not in SUPPORTED_STT_BACKENDS:
-        return (
-            f"unsupported STT backend {STT_BACKEND!r}; expected one of "
-            f"{sorted(SUPPORTED_STT_BACKENDS)}"
-        )
-    if POLISH_STT_BACKEND not in SUPPORTED_STT_BACKENDS:
-        return (
-            f"unsupported Polish STT backend {POLISH_STT_BACKEND!r}; "
-            f"expected one of {sorted(SUPPORTED_STT_BACKENDS)}"
-        )
     if not MISTRAL_API_KEY:
         return (
             "no Mistral API key configured; both transcription and the "
@@ -1378,7 +1466,7 @@ def main():
     log(
         f"OpenSpeaksy starting — primary STT: {stt}; "
         f"dictate language: {DICTATE_LANGUAGE or 'auto'}; "
-        f"Polish STT: {POLISH_STT_BACKEND}; translation backend: {translator}; "
+        f"translation backend: {translator}; "
         f"dictation correction: "
         f"{f'Mistral {MISTRAL_CORRECTION_MODEL}' if CORRECT_DICTATION else 'off'}"
     )
@@ -1409,8 +1497,8 @@ def main():
     time.sleep(0.1)
 
     log(
-        "OpenSpeaksy running — hold right Command (dictate), right Option "
-        "(Russian→English), or right Shift (→Polish)"
+        "OpenSpeaksy running — hold right Command (dictate), right Option + "
+        "right Command (hands-free), or right Shift (Russian→English)"
     )
     AppHelper.runEventLoop()
 

@@ -3,7 +3,6 @@ from unittest.mock import patch
 
 import numpy as np
 
-import transcriber as transcriber_module
 from transcriber import Transcriber, write_wav
 
 
@@ -33,10 +32,9 @@ def test_empty_string_not_hallucination():
     assert not t._is_hallucination("")
 
 
-def test_known_phrase_is_filtered_for_silent_audio(tmp_path, monkeypatch):
+def test_known_phrase_is_filtered_for_silent_audio(tmp_path):
     wav = tmp_path / "silent.wav"
     write_wav(np.zeros(16000, dtype=np.float32), wav)
-    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "mistral")
 
     with patch.object(
         Transcriber,
@@ -46,10 +44,9 @@ def test_known_phrase_is_filtered_for_silent_audio(tmp_path, monkeypatch):
         assert Transcriber().transcribe_wav_sync(wav) == ""
 
 
-def test_legitimate_phrase_is_kept_when_spoken(tmp_path, monkeypatch):
+def test_legitimate_phrase_is_kept_when_spoken(tmp_path):
     wav = tmp_path / "speech.wav"
     write_wav(np.full(16000, 0.1, dtype=np.float32), wav)
-    monkeypatch.setattr(transcriber_module, "STT_BACKEND", "mistral")
 
     with patch.object(
         Transcriber,

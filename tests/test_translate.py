@@ -31,7 +31,6 @@ def _ok_chat(content):
 
 @pytest.fixture
 def transcriber_module(monkeypatch):
-    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
     import importlib
     import transcriber as t
@@ -223,25 +222,6 @@ def test_translate_makes_exactly_one_llm_call(transcriber_module, tmp_path):
     assert mock.call_count == 2
 
 
-def test_polish_makes_exactly_one_llm_call(transcriber_module, tmp_path):
-    t = transcriber_module
-    wav = _write_silent_wav(tmp_path)
-    long_enough = (
-        "Trzeba przerobić rotację kluczy, bo ciągle rzuca błąd 429 i obecny "
-        "limit prób jest zdecydowanie za mały."
-    )
-
-    def fake_urlopen(req, timeout):
-        if "audio/transcriptions" in req.full_url:
-            return _ok_transcribe("Надо переписать ротацию ключей.")
-        return _ok_chat(long_enough)
-
-    with patch.object(t, "urlopen", side_effect=fake_urlopen) as mock:
-        result = t.Transcriber().transcribe_to_polish_sync(wav)
-
-    assert result == long_enough[:-1] + " "
-    assert mock.call_count == 2
-
 
 @pytest.mark.parametrize("raw, pasted", [
     ("Wait — that's not it.", "Wait - that's not it"),
@@ -258,13 +238,7 @@ def test_finish_translation_style(transcriber_module, raw, pasted):
     assert transcriber_module._finish_translation(raw) == pasted
 
 
-@pytest.mark.parametrize("method", [
-    "transcribe_and_translate_sync",
-    "transcribe_to_polish_sync",
-])
-def test_both_translate_modes_apply_the_paste_style(
-    transcriber_module, tmp_path, method
-):
+def test_translation_applies_the_paste_style(transcriber_module, tmp_path):
     t = transcriber_module
     wav = _write_silent_wav(tmp_path)
 
@@ -274,7 +248,7 @@ def test_both_translate_modes_apply_the_paste_style(
         return _ok_chat("Well — it's done.")
 
     with patch.object(t, "urlopen", side_effect=fake_urlopen):
-        result = getattr(t.Transcriber(), method)(wav)
+        result = t.Transcriber().transcribe_and_translate_sync(wav)
 
     assert result == "Well - it's done "
 

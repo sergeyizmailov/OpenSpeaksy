@@ -15,8 +15,6 @@
     <string>__PROJECT_ROOT__</string>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>OPENSPEAKSY_STT_BACKEND</key>
-        <string>mistral</string>
         <key>MISTRAL_API_KEY</key>
         <string>__MISTRAL_API_KEY__</string>
         <key>MISTRAL_MODEL</key>
@@ -25,8 +23,6 @@
         <string>ministral-8b-latest</string>
         <key>OPENSPEAKSY_DICTATE_LANGUAGE</key>
         <string></string>
-        <key>OPENSPEAKSY_POLISH_STT_BACKEND</key>
-        <string>mistral</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

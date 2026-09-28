@@ -313,15 +313,11 @@ def test_watchdog_processing_timeout_preserves_the_recording(monkeypatch, tmp_pa
     assert ("error", "Transcription timed out, saved for retry") in overlay.events
 
 
-def test_translate_and_polish_modes_survive_recovery(recovery, monkeypatch, tmp_path):
+def test_translate_mode_survives_recovery(recovery, monkeypatch, tmp_path):
     """Mode is carried in the filename, so recovery must route on it."""
     _wav(tmp_path / "20260827-000018-a.translate.wav")
-    _wav(tmp_path / "20260827-000019-b.polish.wav")
     monkeypatch.setattr(
         main.transcriber, "transcribe_and_translate_sync", lambda p: "English "
-    )
-    monkeypatch.setattr(
-        main.transcriber, "transcribe_to_polish_sync", lambda p: "Polski "
     )
     monkeypatch.setattr(
         main.transcriber,
@@ -333,7 +329,7 @@ def test_translate_and_polish_modes_survive_recovery(recovery, monkeypatch, tmp_
 
     main.recover_pending_recordings()
 
-    assert recovery == ["English " + main.RECOVERY_SEPARATOR + "Polski "]
+    assert recovery == ["English "]
 
 
 def test_processing_error_message_carries_the_providers_wait(worker, monkeypatch, tmp_path):

@@ -10,7 +10,6 @@ import transcriber as t
 
 PROMPTS = [
     "TRANSLATION_SYSTEM_PROMPT",
-    "POLISH_SYSTEM_PROMPT",
 ]
 
 

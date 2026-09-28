@@ -8,8 +8,7 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
 1. Confirm the host is **macOS** (`uname -s` should print `Darwin`).
 2. Make sure the user has a Mistral API key
    (<https://console.mistral.ai/api-keys>). It is required for both
-   speech-to-text (Voxtral) and the two translate hotkeys — not optional with
-   the shipped defaults.
+   speech-to-text (Voxtral) and translation.
 3. Run `./scripts/install.sh` from the repo root. It will prompt for the API
    key and write it into `~/Library/LaunchAgents/com.openspeaksy.plist`'s
    `EnvironmentVariables` (never to the repo). Set `MISTRAL_API_KEY=...`
@@ -20,7 +19,7 @@ ChatGPT desktop) installing or modifying OpenSpeaksy on a user's Mac.
    yourself — there is no scripted path.
 5. Verify by tailing `~/Library/Logs/com.openspeaksy/main.log` — you should
    see `OpenSpeaksy starting — primary STT: Mistral voxtral-mini-2602`.
-6. Tell the user to hold right Command to dictate, right Option to dictate Russian and paste English, or right Shift to dictate Russian and paste Polish. Tapping Caps Lock cancels a transcription in flight (the audio is kept); tapping it twice quickly retries everything queued.
+6. Tell the user to hold right Command to dictate, press right Option + right Command for hands-free dictation (tap right Command to stop), or hold right Shift to dictate Russian and paste English. Tapping Caps Lock cancels a transcription in flight (the audio is kept); tapping it twice quickly retries everything queued.
 
 ## If the user asks you to modify or debug OpenSpeaksy
 
@@ -46,25 +45,31 @@ Conventions in this codebase:
   cleared in `begin_processing`/`_abandon_recording_cycle`/watchdog. A key-up
   for a keycode that doesn't match `current_hotkey` is ignored — this is what
   prevents tapping the OTHER hotkey mid-record from ending the cycle.
-- **Three hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) routes through
+- **Hands-free is right Option + right Command**: `on_dictate_key` starts a
+  cycle with `hands_free=True` when the Command event's own flags show right
+  Option held (never a remembered key-down, which a lost release would leave
+  stuck), and `on_hands_free_key` latches a held dictation via
+  `_latch_hands_free`. The cycle ignores key-ups until a clean stop tap of
+  right Command. "Clean" means no ordinary key or mouse button went down during
+  it, read from `CGEventSourceSecondsSinceLastEventType` via
+  `_other_input_since` — never by subscribing the tap to key events. It still
+  ends through `on_key_up`, so the watchdog and cancel finalize it exactly like
+  a held recording.
+- **Two hotkeys, one cycle**: right Cmd (`MODE_DICTATE`) routes through
   `transcribe_and_correct_sync` (Mistral STT → optional correction pass
   for transcripts ≥ `CORRECTION_MIN_CHARS`, gated by `CORRECT_DICTATION`);
-  right Option (`MODE_TRANSLATE`) routes through
-  `transcribe_and_translate_sync` (Mistral STT RU → Mistral translate);
-  right Shift (`MODE_POLISH`)
-  mirrors that flow through `transcribe_to_polish_sync` for RU → Polish. The
+  right Shift (`MODE_TRANSLATE`) routes through
+  `transcribe_and_translate_sync` (Mistral STT RU → Mistral translate). The
   mode is captured under `state_lock` in `_begin_recording` and consumed by
   `begin_processing`; it is also encoded in the pending filename
   (`...-{uuid}.{mode}.wav`) so a crash between save and worker spawn doesn't
   lose the intent.
-- **Per-mode STT routing**: `OPENSPEAKSY_DICTATE_LANGUAGE` optionally forces a
-  language hint for right Command; right Option always requests Russian;
-  `OPENSPEAKSY_POLISH_STT_BACKEND` exists for interface parity but can only
-  ever resolve to `mistral`; right Shift still forces Russian before the
-  Mistral Polish translation.
+- **Per-mode language**: `OPENSPEAKSY_DICTATE_LANGUAGE` optionally forces a
+  language hint for right Command; right Shift always requests Russian.
 - **Overlay labels reflect intent**: call `Overlay.show(mode, label=...)` with
   the value from `MODE_LABELS`. All modes share the same flat dark pill;
-  translate modes add `English` or `Polish` above it. Errors show a message
+  translate mode adds `English` above it, and a hands-free dictation adds
+  `HANDS_FREE_LABEL`. Errors show a message
   inside the pill, which resizes to the text (`_error_frame` measures it,
   wrapping at `ERROR_MAX_W`); `overlay.flash_error(message)` takes the text and
   `main.error_notice()` turns a raw provider error into it. Passing no message
@@ -120,7 +125,7 @@ Conventions in this codebase:
   this without thinking about what dictated audio leaks imply.
 - **One provider key**: `MISTRAL_API_KEY` does both speech-to-text (Voxtral)
   and translation/correction. There is nowhere to rotate to on a 429.
-  `_chat_completion` (translate/correct/polish) passes
+  `_chat_completion` (translate/correct) passes
   `_request_json(..., retry_throttling=False)` — a 429 fails fast rather than
   spending the local retry budget on a request the account-level limit will
   refuse again immediately. The transcription call (`_transcribe_mistral`)

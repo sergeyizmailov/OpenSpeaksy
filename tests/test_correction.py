@@ -29,7 +29,6 @@ def _ok_chat(content):
 def transcriber_module(monkeypatch):
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
     # Pin STT: these tests are about the correction pass, not backend routing.
-    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
     # Shipped default is off; these tests exercise the pass itself.
     monkeypatch.setenv("OPENSPEAKSY_CORRECT_DICTATION", "1")
     import importlib
@@ -85,7 +84,6 @@ def test_correction_uses_its_own_model_and_temperature(transcriber_module, tmp_p
 def test_shipped_default_is_off(monkeypatch, tmp_path):
     """Dictation pastes the raw transcript unless the switch is set explicitly."""
     monkeypatch.setenv("MISTRAL_API_KEY", "mistral-test-key")
-    monkeypatch.setenv("OPENSPEAKSY_STT_BACKEND", "mistral")
     monkeypatch.delenv("OPENSPEAKSY_CORRECT_DICTATION", raising=False)
     import importlib
     import transcriber as t

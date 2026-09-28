@@ -4,8 +4,7 @@
 #
 # Sets up the Python venv and the LaunchAgent that runs main.py.
 # Requires a Mistral API key and writes it into the plist's
-# EnvironmentVariables. Mistral handles both speech-to-text (Voxtral) and the
-# translate hotkeys.
+# EnvironmentVariables. Mistral handles both speech-to-text and translation.
 #
 # Usage:   ./scripts/install.sh
 # Env:     PYTHON_RUNTIME=python3.13
@@ -55,8 +54,7 @@ fi
 step "Configuring Mistral API key"
 if [[ -z "${MISTRAL_API_KEY:-}" ]]; then
     cat <<EOF
-    OpenSpeaksy uses Mistral for speech-to-text (Voxtral) and for
-    Russian-to-English / Russian-to-Polish translation.
+    OpenSpeaksy uses Mistral for speech-to-text and translation.
     Create an API key at: https://console.mistral.ai/api-keys
 
     The key is written only into your local plist
@@ -136,10 +134,9 @@ System Settings → Privacy & Security:
 
 Using it
 
-  Hold right Command, speak, release — dictate in any supported language;
-  the text pastes verbatim. Hold right Option instead to dictate in Russian and
-  have the English translation pasted. Hold right Shift to dictate in Russian
-  and have the Polish translation pasted. The output also stays in your clipboard.
+  Hold right Command        dictate
+  Right Option + Command    dictate hands-free; tap right Command to stop
+  Hold right Shift          speak Russian, paste English
 
   Logs:    tail -f ~/Library/Logs/com.openspeaksy/main.log
   Stop:    launchctl unload ~/Library/LaunchAgents/com.openspeaksy.plist
