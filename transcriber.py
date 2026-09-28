@@ -22,8 +22,8 @@ logger = logging.getLogger("openspeaksy")
 # both faster to recover and safer than one very long socket wait.
 REQUEST_TIMEOUT_SEC = 30
 # Refuse an upload this large before spending a round-trip on it. Measured
-# 2026-09-22: a 110 MB WAV (1 h of audio, what a stuck key produces against
-# RECORDING_TIMEOUT_SEC) is answered with 429 code 3505, the same capacity
+# 2026-09-22: a 110 MB WAV (1 h of audio) is answered with 429 code 3505, the
+# same capacity
 # refusal a transient shortage gives — so the retry ladder would wait it out
 # again and again, ~3 min per attempt, instead of setting it aside. The size
 # is the one signal that separates the two, and only this side can see it.
@@ -68,7 +68,13 @@ _CONNECT_FAILURE_ERRNOS = frozenset({
     errno.ENOTCONN,
 })
 RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
-SILENCE_RMS_THRESHOLD = 0.001
+# Speech is told from room noise by its loudest 100 ms rather than the average:
+# a phrase full of pauses averages low, but room noise never peaks. Measured on
+# this Mac's built-in mic 2026-09-28: recordings with nothing said peaked at
+# 0.003-0.010 per frame, while their average (0.0013-0.0036) cleared the old
+# 0.001 whole-file threshold and got retried as a provider failure.
+SPEECH_FRAME_SAMPLES = 1600
+SPEECH_FRAME_RMS = 0.02
 DICTATE_LANGUAGE = os.environ.get("OPENSPEAKSY_DICTATE_LANGUAGE", "").strip() or None
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "").strip()
@@ -423,7 +429,7 @@ def _transcription_text(result, wav_path):
             "transcription response has no text field"
         )
     text = text.strip()
-    if not text and wav_rms(wav_path) > SILENCE_RMS_THRESHOLD:
+    if not text and wav_has_speech(wav_path):
         raise _RetryableProviderResponseError(
             "provider returned an empty transcript for non-silent audio"
         )
@@ -552,17 +558,28 @@ def write_wav(audio, wav_path, samplerate=16000):
         os.fsync(f.fileno())
 
 
-def wav_rms(wav_path):
+def loudest_frame_rms(samples):
+    """RMS of the loudest SPEECH_FRAME_SAMPLES window, samples in [-1, 1]."""
+    samples = np.asarray(samples, dtype=np.float32)
+    if samples.size == 0:
+        return 0.0
+    usable = samples.size // SPEECH_FRAME_SAMPLES * SPEECH_FRAME_SAMPLES
+    frames = (
+        samples[:usable].reshape(-1, SPEECH_FRAME_SAMPLES)
+        if usable
+        else samples.reshape(1, -1)
+    )
+    return float(np.sqrt(np.mean(frames * frames, axis=1)).max())
+
+
+def wav_has_speech(wav_path):
     with wave.open(str(wav_path), "rb") as wav:
         if wav.getsampwidth() != 2:
             raise TranscriptionError(
                 f"unsupported WAV sample width: {wav.getsampwidth()} bytes"
             )
         pcm = np.frombuffer(wav.readframes(wav.getnframes()), dtype="<i2")
-    if pcm.size == 0:
-        return 0.0
-    normalized = pcm.astype(np.float32) / 32768.0
-    return float(np.sqrt(np.mean(normalized * normalized)))
+    return loudest_frame_rms(pcm.astype(np.float32) / 32768.0) >= SPEECH_FRAME_RMS
 
 
 HALLUCINATIONS = {
@@ -600,7 +617,7 @@ class Transcriber:
         # A phrase blocklist alone would silently discard legitimate dictation
         # such as "Thank you". Filter known model artifacts only when the WAV
         # is effectively silent.
-        if self._is_hallucination(text) and wav_rms(wav_path) <= SILENCE_RMS_THRESHOLD:
+        if self._is_hallucination(text) and not wav_has_speech(wav_path):
             return ""
         if text:
             text += " "

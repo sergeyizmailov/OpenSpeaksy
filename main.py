@@ -35,6 +35,7 @@ from recorder import Recorder
 from transcriber import (
     CORRECT_DICTATION,
     is_capacity_shortage,
+    loudest_frame_rms,
     DICTATE_LANGUAGE,
     MISTRAL_API_KEY,
     MISTRAL_CORRECTION_MODEL,
@@ -100,11 +101,12 @@ QUARANTINE_DIR = PENDING_DIR / "quarantine"
 # Watchdog: an independent poll thread resets stuck states. Triggers when a
 # key-up is lost (Secure Input app, tap glitch, mid-recording crash) and the
 # state machine would otherwise sit forever with audio buffering in memory.
-# The hard limit is only a final memory guard. Reaching it finalizes and
-# preserves the audio instead of discarding it. Do not poll
+# The hard limit stops a hands-free recording someone forgot about. Reaching
+# it finalizes and transcribes the audio instead of discarding it. 20 minutes
+# is about 38 MB at 16 kHz, well inside transcriber.MAX_UPLOAD_BYTES. Do not poll
 # CGEventSourceKeyState for modifier ownership here: macOS can report a held
 # right-side modifier as released, which would cut off valid dictation.
-RECORDING_TIMEOUT_SEC = 3600
+RECORDING_TIMEOUT_SEC = 20 * 60
 # Translation makes two provider calls (STT, translate), each with bounded
 # retries. Keep the watchdog above that legitimate retry budget so it never
 # invalidates a worker still making progress.
@@ -1222,7 +1224,10 @@ def on_key_up(keycode):
     with _save_gate:
         try:
             audio = recorder.stop()
-            log(f"recording stopped: {len(audio)} samples; mode={mode}")
+            log(
+                f"recording stopped: {len(audio)} samples; mode={mode}; "
+                f"loudest frame {loudest_frame_rms(audio):.4f}"
+            )
         except Exception as e:
             log(f"recorder.stop error: {e}")
             if _claim_job_completion(job_id):

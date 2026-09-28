@@ -122,7 +122,7 @@ def test_empty_non_silent_transcription_is_retried(monkeypatch, tmp_path):
     responses = [_Response({"text": ""}), _Response({"text": "recovered"})]
 
     monkeypatch.setattr(transcriber, "MISTRAL_API_KEY", "test-key")
-    monkeypatch.setattr(transcriber, "wav_rms", lambda path: 0.1)
+    monkeypatch.setattr(transcriber, "wav_has_speech", lambda path: True)
 
     with patch.object(transcriber, "urlopen", side_effect=responses) as urlopen:
         result = transcriber.Transcriber()._transcribe_mistral(wav)
