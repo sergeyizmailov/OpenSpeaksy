@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/banner.jpg" alt="Speech to Text for macOS, powered by Mistral" width="720">
+<img src="docs/banner.png" alt="Hold a key. Speak. Done. Open-source dictation for macOS, built on Mistral and Voxtral" width="720">
 
 # OpenSpeaksy
 

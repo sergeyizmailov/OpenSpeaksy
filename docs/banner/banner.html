@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<!--
+  Source of docs/banner.png. Render at 1280x640, 2x:
+  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" --headless \
+    --hide-scrollbars --window-size=1280,640 --force-device-scale-factor=2 \
+    --screenshot=docs/banner.png docs/banner/banner.html
+
+  The pill is overlay.py's recording state scaled 4.4x: 70x33 pt, fill #242424,
+  1 pt rim at 14% white, five 2 pt bars 3.5 pt apart in #bebebe, heights taken
+  from one real animation frame (phase 5.4).
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>OpenSpeaksy banner</title>
+<style>
+  :root {
+    --scale: 4.4;
+    --paper: #f4f2ee;
+    --ink: #1f1f1f;
+    --muted: #8a8884;
+    --faint: #a9a7a2;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1280px; height: 640px; overflow: hidden; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .pill {
+    width: calc(70px * var(--scale));
+    height: calc(33px * var(--scale));
+    border-radius: calc(16.5px * var(--scale));
+    background: #242424;
+    box-shadow: inset 0 0 0 calc(1px * var(--scale)) rgba(255, 255, 255, 0.14);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: calc(3.5px * var(--scale));
+  }
+  .bar {
+    width: calc(2px * var(--scale));
+    border-radius: calc(1px * var(--scale));
+    background: #bebebe;
+  }
+
+  h1 {
+    margin-top: 54px;
+    font-size: 72px;
+    font-weight: 300;
+    letter-spacing: -0.9px;
+    word-spacing: 6px;
+    line-height: 1;
+  }
+  .sub {
+    margin-top: 22px;
+    font-size: 27px;
+    font-weight: 400;
+    color: var(--muted);
+    letter-spacing: -0.2px;
+  }
+  .sub .dot { margin: 0 14px; color: var(--faint); }
+
+  .built {
+    margin-top: 54px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    font-size: 21px;
+    color: var(--muted);
+  }
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 25px;
+    font-weight: 600;
+    color: var(--ink);
+    letter-spacing: -0.3px;
+  }
+  .brand img { width: 30px; height: 30px; display: block; }
+  .plus { color: var(--faint); margin: 0 4px; }
+</style>
+</head>
+<body>
+  <div class="pill" aria-label="Recording">
+    <div class="bar" style="height: calc(5.7px * var(--scale))"></div>
+    <div class="bar" style="height: calc(10.8px * var(--scale))"></div>
+    <div class="bar" style="height: calc(16.0px * var(--scale))"></div>
+    <div class="bar" style="height: calc(11.2px * var(--scale))"></div>
+    <div class="bar" style="height: calc(5.9px * var(--scale))"></div>
+  </div>
+
+  <h1>Hold a key. Speak. Done.</h1>
+  <p class="sub">Open-source dictation for macOS<span class="dot">•</span>Free with your own API key</p>
+
+  <div class="built">
+    <span>Built on</span>
+    <span class="brand"><img src="mistral.svg" alt="">Mistral</span>
+    <span class="plus">+</span>
+    <span class="brand"><img src="voxtral.svg" alt="">Voxtral</span>
+  </div>
+</body>
+</html>
