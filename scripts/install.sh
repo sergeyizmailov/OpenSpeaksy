@@ -134,8 +134,8 @@ System Settings → Privacy & Security:
 
 Using it
 
-  Hold right Command        dictate
-  Right Option + Command    dictate hands-free; tap right Command to stop
+  Hold right Command or right Option   dictate
+  Both together                        dictate hands-free; tap either to stop
   Hold right Shift          speak Russian, paste English
 
   Logs:    tail -f ~/Library/Logs/com.openspeaksy/main.log

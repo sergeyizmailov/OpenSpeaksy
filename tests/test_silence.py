@@ -97,3 +97,21 @@ def test_the_recording_limit_always_fits_the_upload_limit():
     """A forgotten hands-free recording must still be transcribable."""
     bytes_per_second = 16000 * 2
     assert main.RECORDING_TIMEOUT_SEC * bytes_per_second < transcriber.MAX_UPLOAD_BYTES
+
+
+def test_quiet_real_speech_still_counts_as_speech(tmp_path):
+    """The quietest real dictation measured on a MacBook mic peaked at 0.0104."""
+    wav = tmp_path / "quiet.wav"
+    audio = _room_noise(level=0.0005)
+    audio[8000:9600] += 0.0104 * np.sqrt(2) * np.sin(np.linspace(0, 200 * np.pi, 1600))
+    write_wav(audio, wav)
+    assert wav_has_speech(wav)
+
+
+def test_the_loudest_empty_take_measured_is_still_silence(tmp_path):
+    """Takes with nothing said peaked at 0.0053 at most."""
+    wav = tmp_path / "empty.wav"
+    audio = _room_noise(level=0.0005)
+    audio[8000:9600] += 0.0053 * np.sqrt(2) * np.sin(np.linspace(0, 200 * np.pi, 1600))
+    write_wav(audio, wav)
+    assert not wav_has_speech(wav)

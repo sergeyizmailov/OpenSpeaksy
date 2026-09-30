@@ -15,8 +15,8 @@ Open-source speech-to-text for macOS, built on [Mistral](https://mistral.ai). Fr
 
 | Key | Action |
 |:---|:---|
-| Hold **right ⌘** | Dictate |
-| **Right ⌥ + right ⌘** | Dictate hands-free. Tap right ⌘ to stop |
+| Hold **right ⌘** or **right ⌥** | Dictate |
+| **Right ⌘ + right ⌥** | Dictate hands-free. Tap either key to stop |
 | Hold **right ⇧** | Speak Russian, paste English |
 | **Caps Lock** | Cancel a stuck transcription. The audio is kept |
 

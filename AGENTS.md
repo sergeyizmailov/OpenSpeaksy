@@ -8,7 +8,7 @@
 3. Run `MISTRAL_API_KEY=... ./scripts/install.sh`. Its own key prompt is a hidden `read` you can't answer. If it has to install Homebrew, that step needs the user's password: hand it to them.
 4. The user must allow `<repo>/venv/bin/python` under Input Monitoring and Accessibility (System Settings → Privacy & Security). No scripted path. launchd relaunches the app every few seconds until the grant lands.
 5. Done when `~/Library/Logs/com.openspeaksy/main.log` shows `OpenSpeaksy running`.
-6. Tell the user the keys: hold right ⌘ dictate; right ⌥ + right ⌘ hands-free, tap right ⌘ to stop; hold right ⇧ Russian → English; Caps Lock cancels a stuck transcription.
+6. Tell the user the keys: hold right ⌘ or right ⌥ to dictate; both together for hands-free, tap either to stop; hold right ⇧ Russian → English; Caps Lock cancels a stuck transcription.
 
 ## Code
 
@@ -17,9 +17,9 @@
 Invariants that are easy to break:
 
 - **State** changes only via `_begin_recording`, `_abandon_recording_cycle`, `begin_processing`, `_claim_job_completion`, `handle_shutdown`, `_latch_hands_free` and the watchdog. Anything that pastes, deletes a pending file or touches the overlay must hold a claim. `current_job_id` voids stale workers; a stale paste lands in whatever the user is doing now.
-- **`current_hotkey`** owns the cycle: key-ups from other keys are ignored.
+- **`current_hotkey`** owns the cycle: key-ups from other keys are ignored. Right ⌘ and right ⌥ are both dictation keys (`DICTATION_KEYS`); a hands-free stop tap on the non-owner ends the cycle through its owner (`_finish_hands_free`).
 - **Event tap** is listen-only on `kCGEventFlagsChanged`. Never subscribe to key events: it would see every keystroke. Every hotkey is therefore a modifier. Use `_other_input_since` (system idle counters) to detect a key or click during a tap.
-- **Hands-free**: Option state comes from the Command event's own flags, never a remembered key-down. The stop tap counts only if `_other_input_since` is false.
+- **Hands-free**: the other dictation key's state comes from the event's own flags, never a remembered key-down. The stop tap counts only if `_other_input_since` is false.
 - **Caps Lock** is a toggle: one event per press, handle every event. Cancel acts only on work older than `CANCEL_GRACE_SEC`, stays silent otherwise, and never deletes audio.
 - **Audio** is written atomically to `.pending/` (0700/0600) before any request; the mode is in the filename. Recovery copies to the clipboard, never pastes, and runs before the tap starts.
 - **Retries**: `_pending_failures` (quarantine, ignores outages), `_pending_attempt_count` (backoff) and `_pending_next_attempt` are separate on purpose. EPIPE/ECONNRESET/ETIMEDOUT/ENOTCONN are `ProviderUnavailableError`: pause, don't count.

@@ -70,11 +70,12 @@ _CONNECT_FAILURE_ERRNOS = frozenset({
 RETRYABLE_HTTP_CODES = {408, 425, 429, 500, 502, 503, 504}
 # Speech is told from room noise by its loudest 100 ms rather than the average:
 # a phrase full of pauses averages low, but room noise never peaks. Measured on
-# this Mac's built-in mic 2026-09-28: recordings with nothing said peaked at
-# 0.003-0.010 per frame, while their average (0.0013-0.0036) cleared the old
-# 0.001 whole-file threshold and got retried as a provider failure.
+# a MacBook's built-in mic over ~330 real dictations: speech peaked at 0.0104
+# and up, while takes with nothing said peaked at 0.0053 at most. The line sits
+# nearer the silence, because calling speech silence drops it without a retry,
+# while calling silence speech only costs a retry.
 SPEECH_FRAME_SAMPLES = 1600
-SPEECH_FRAME_RMS = 0.02
+SPEECH_FRAME_RMS = 0.006
 DICTATE_LANGUAGE = os.environ.get("OPENSPEAKSY_DICTATE_LANGUAGE", "").strip() or None
 
 MISTRAL_API_KEY = os.environ.get("MISTRAL_API_KEY", "").strip()

@@ -55,9 +55,13 @@ HOTKEY_KEYCODE   = 0x36   # right Command
 HOTKEY_FLAG      = 0x10   # NX_DEVICERCMDKEYMASK — distinguishes right Cmd from left
 TRANSLATE_KEYCODE = 0x3C  # right Shift — dictate Russian, paste English
 TRANSLATE_FLAG    = 0x04  # NX_DEVICERSHIFTKEYMASK — distinguishes right Shift from left
-# Right Option + right Command, in either order, starts hands-free dictation.
-HANDS_FREE_KEYCODE = 0x3D  # right Option
-HANDS_FREE_FLAG    = 0x40  # NX_DEVICERALTKEYMASK
+OPTION_KEYCODE = 0x3D     # right Option — dictates exactly like right Command
+OPTION_FLAG    = 0x40     # NX_DEVICERALTKEYMASK
+# The two interchangeable dictation keys: keycode -> (own flag, other key's flag).
+DICTATION_KEYS = {
+    HOTKEY_KEYCODE: (HOTKEY_FLAG, OPTION_FLAG),
+    OPTION_KEYCODE: (OPTION_FLAG, HOTKEY_FLAG),
+}
 # Cancel. A modifier on purpose: the event tap subscribes to
 # kCGEventFlagsChanged only, so an ordinary key like Escape or Space would mean
 # subscribing to every keystroke the user types. Space would also fire
@@ -80,11 +84,11 @@ CANCEL_DOUBLE_TAP_SEC = 0.6
 # typing a capital letter, not asking to cancel — and silently killing a
 # working transcription would be far worse than ignoring the key.
 CANCEL_GRACE_SEC = 10.0
-# Hands-free dictation: right Option + right Command records without either
-# key being held, and a tap of right Command stops it. Holding the key blocks
-# ordinary clicks, since macOS reads them as Cmd+click, and a long dictation is
-# tiring to hold. Pressing right Option during a held dictation switches it to
-# hands-free without losing what was already said.
+# Hands-free dictation: both dictation keys pressed together, in either order,
+# record without either being held, and a tap of either one stops it. Holding
+# a key blocks ordinary clicks, since macOS reads them as Cmd+click, and a long
+# dictation is tiring to hold. Pressing the second key during a held
+# dictation switches it to hands-free without losing what was already said.
 HANDS_FREE_LABEL = "Hands-free"
 MODE_DICTATE   = "dictate"
 MODE_TRANSLATE = "translate"
@@ -1292,17 +1296,18 @@ def _hands_free_recording():
         return (
             state == "recording"
             and current_hands_free
-            and current_hotkey == HOTKEY_KEYCODE
+            and current_hotkey in DICTATION_KEYS
         )
 
 
-def _latch_hands_free():
-    """Turn a held right-Command dictation into a hands-free one."""
+def _latch_hands_free(keycode):
+    """Turn a held dictation hands-free when the other dictation key goes down."""
     global current_hands_free
     with state_lock:
         if (
             state == "recording"
-            and current_hotkey == HOTKEY_KEYCODE
+            and current_hotkey in DICTATION_KEYS
+            and current_hotkey != keycode
             and not current_hands_free
         ):
             current_hands_free = True
@@ -1310,34 +1315,34 @@ def _latch_hands_free():
         return False
 
 
-def on_hands_free_key(pressed):
-    """Right Option: only meaningful while right Command is dictating."""
-    global _hands_free_started_at, _hands_free_stop_pressed_at
-    if pressed and _latch_hands_free():
-        _hands_free_started_at = time.monotonic()
-        _hands_free_stop_pressed_at = None
-        log("recording switched to hands-free")
-        overlay.show("recording", label=HANDS_FREE_LABEL)
+def _finish_hands_free():
+    """End the cycle through its owner, whichever key the stop tap was on."""
+    with state_lock:
+        owner = current_hotkey
+    if owner in DICTATION_KEYS:
+        on_key_up(owner)
 
 
-def on_dictate_key(pressed, option_held):
+def on_dictate_key(keycode, pressed, other_held):
     """
-    Right Command: hold to dictate, or press it with right Option held for
-    hands-free, then tap it again to stop. The stop tap is only honoured on
-    release, and only if nothing was typed or clicked while it was down, so
-    right Command still works as a shortcut modifier during a hands-free
-    recording.
+    Right Command or right Option: hold either to dictate. Pressing the other
+    as well, in either order, makes the recording hands-free, and a tap of
+    either key then stops it. The stop tap counts on release, and only if
+    nothing was typed or clicked while it was down, so both keys still work as
+    shortcut modifiers during a hands-free recording.
 
-    The Option state comes from this event's own flags rather than from
-    remembered key-downs: a lost Option release would otherwise turn every
-    later dictation into a hands-free one.
+    The other key's state comes from this event's own flags rather than from
+    remembered key-downs: a lost release would otherwise turn every later
+    dictation into a hands-free one.
     """
     global _hands_free_started_at, _hands_free_stop_pressed_at
     now = time.monotonic()
 
     if _hands_free_recording():
         if pressed:
-            _hands_free_stop_pressed_at = now
+            # Pressing both keys to stop starts the tap at the first of them.
+            if _hands_free_stop_pressed_at is None:
+                _hands_free_stop_pressed_at = now
             return
         stop_pressed_at = _hands_free_stop_pressed_at
         started_at = _hands_free_started_at
@@ -1345,20 +1350,27 @@ def on_dictate_key(pressed, option_held):
         _hands_free_started_at = None
         if stop_pressed_at is not None:
             if not _other_input_since(stop_pressed_at):
-                on_key_up(HOTKEY_KEYCODE)
+                _finish_hands_free()
         elif started_at is not None and _other_input_since(started_at):
             # A key went down while the combination was held, so it was an
             # Option + Command shortcut, not a request to dictate.
-            on_key_up(HOTKEY_KEYCODE)
+            _finish_hands_free()
+        return
+
+    if pressed and _latch_hands_free(keycode):
+        _hands_free_started_at = now
+        _hands_free_stop_pressed_at = None
+        log("recording switched to hands-free")
+        overlay.show("recording", label=HANDS_FREE_LABEL)
         return
 
     if not pressed:
-        on_key_up(HOTKEY_KEYCODE)
+        on_key_up(keycode)
         return
 
     _hands_free_stop_pressed_at = None
-    _hands_free_started_at = now if option_held else None
-    on_key_down(HOTKEY_KEYCODE, MODE_DICTATE, hands_free=option_held)
+    _hands_free_started_at = now if other_held else None
+    on_key_down(keycode, MODE_DICTATE, hands_free=other_held)
 
 
 def tap_callback(proxy, event_type, event, refcon):
@@ -1373,13 +1385,10 @@ def tap_callback(proxy, event_type, event, refcon):
         keycode = CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
         # Device-dependent flag distinguishes left vs right modifier —
         # the shared mask (e.g. kCGEventFlagMaskCommand) catches both
-        if keycode == HOTKEY_KEYCODE:
+        if keycode in DICTATION_KEYS:
+            own, other = DICTATION_KEYS[keycode]
             flags = CGEventGetFlags(event)
-            on_dictate_key(
-                bool(flags & HOTKEY_FLAG), bool(flags & HANDS_FREE_FLAG)
-            )
-        elif keycode == HANDS_FREE_KEYCODE:
-            on_hands_free_key(bool(CGEventGetFlags(event) & HANDS_FREE_FLAG))
+            on_dictate_key(keycode, bool(flags & own), bool(flags & other))
         elif keycode == TRANSLATE_KEYCODE:
             pressed = bool(CGEventGetFlags(event) & TRANSLATE_FLAG)
             if pressed:
@@ -1502,8 +1511,8 @@ def main():
     time.sleep(0.1)
 
     log(
-        "OpenSpeaksy running — hold right Command (dictate), right Option + "
-        "right Command (hands-free), or right Shift (Russian→English)"
+        "OpenSpeaksy running — hold right Command or right Option (dictate), "
+        "press both (hands-free), or hold right Shift (Russian→English)"
     )
     AppHelper.runEventLoop()
 

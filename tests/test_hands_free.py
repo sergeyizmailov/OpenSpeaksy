@@ -1,6 +1,6 @@
 """
-Hands-free dictation: right Option + right Command records without holding
-either key, and one tap of right Command stops it. The rules that keep it from
+Right Command and right Option are interchangeable: hold either to dictate,
+press both for hands-free, tap either to stop. The rules that keep it from
 firing or stopping by accident are the point of these tests: a shortcut typed
 with these modifiers must behave exactly as before.
 """
@@ -95,54 +95,58 @@ def rig(monkeypatch, tmp_path):
     }.items():
         monkeypatch.setattr(main, name, value)
 
+    keys = {"cmd": main.HOTKEY_KEYCODE, "opt": main.OPTION_KEYCODE}
+
     class Rig:
-        option_held = False
+        held = set()
 
-        def press(self, after=0.0):
+        def press(self, key="cmd", after=0.0):
             clock.now += after
-            main.on_dictate_key(True, self.option_held)
+            other = (self.held - {key}) != set()
+            self.held.add(key)
+            main.on_dictate_key(keys[key], True, other)
 
-        def release(self, after=0.0):
+        def release(self, key="cmd", after=0.0):
             clock.now += after
-            main.on_dictate_key(False, self.option_held)
+            self.held.discard(key)
+            main.on_dictate_key(keys[key], False, self.held != set())
 
-        def tap(self, after=0.0, held=0.1):
-            self.press(after)
-            self.release(held)
+        def tap(self, key="cmd", after=0.0, held=0.1):
+            self.press(key, after)
+            self.release(key, held)
 
-        def option(self, pressed, after=0.0):
-            clock.now += after
-            self.option_held = pressed
-            main.on_hands_free_key(pressed)
-
-        def combo(self, after=0.0, held=0.15):
-            """Option down, Command down, Command up, Option up."""
-            self.option(True, after)
-            self.press(0.03)
-            self.release(held)
-            self.option(False, 0.02)
+        def combo(self, first="opt", after=0.0, held=0.15):
+            """Both keys down, then both up, the second key released first."""
+            second = "cmd" if first == "opt" else "opt"
+            self.press(first, after)
+            self.press(second, 0.03)
+            self.release(second, held)
+            self.release(first, 0.02)
 
         def type_key(self, after=0.0):
             clock.now += after
             typed["at"] = clock.now
 
     rig = Rig()
+    rig.held = set()
     rig.saved = saved
     rig.overlay = overlay
     return rig
 
 
-def test_holding_the_key_still_dictates_as_before(rig):
-    rig.press()
-    rig.release(after=3.0)
+@pytest.mark.parametrize("key", ["cmd", "opt"])
+def test_holding_either_key_dictates(rig, key):
+    rig.press(key)
+    rig.release(key, after=3.0)
 
     assert rig.saved == [48000]
     assert main.state == "processing"
     assert ("recording", main.HANDS_FREE_LABEL) not in rig.overlay.shown
 
 
-def test_option_plus_command_keeps_recording_after_release(rig):
-    rig.combo()
+@pytest.mark.parametrize("first", ["cmd", "opt"])
+def test_both_keys_in_either_order_go_hands_free(rig, first):
+    rig.combo(first)
 
     assert main.state == "recording"
     assert main.current_hands_free is True
@@ -150,69 +154,65 @@ def test_option_plus_command_keeps_recording_after_release(rig):
     assert rig.saved == []
 
 
-def test_command_first_then_option_also_works_and_keeps_the_audio(rig):
-    """Pressing Option mid-dictation latches it; nothing said so far is lost."""
-    rig.press()
-    rig.option(True, after=4.0)
-    rig.release(after=0.1)
-    rig.option(False, after=0.05)
+@pytest.mark.parametrize("held, added", [("cmd", "opt"), ("opt", "cmd")])
+def test_adding_the_other_key_mid_dictation_keeps_the_audio(rig, held, added):
+    rig.press(held)
+    rig.press(added, after=4.0)
+    rig.release(held, after=0.1)
+    rig.release(added, after=0.05)
 
     assert main.state == "recording"
     assert rig.overlay.shown[-1] == ("recording", main.HANDS_FREE_LABEL)
 
-    rig.tap(after=10.0)
+    rig.tap(held, after=10.0)
     assert main.state == "processing"
     assert rig.saved[0] >= 14 * 16000
 
 
-def test_one_tap_of_command_stops_and_sends_the_recording(rig):
-    rig.combo()
-    rig.tap(after=30.0)
+@pytest.mark.parametrize("first, stop", [
+    ("opt", "cmd"), ("opt", "opt"), ("cmd", "cmd"), ("cmd", "opt"),
+])
+def test_a_tap_of_either_key_stops_it(rig, first, stop):
+    rig.combo(first)
+    rig.tap(stop, after=30.0)
 
     assert main.state == "processing"
     assert len(rig.saved) == 1
     assert rig.saved[0] >= 30 * 16000
 
 
-def test_the_combination_again_also_stops_it(rig):
-    rig.combo()
-    rig.combo(after=10.0)
+def test_both_keys_again_also_stop_it(rig):
+    rig.combo("opt")
+    rig.combo("cmd", after=10.0)
 
     assert main.state == "processing"
     assert len(rig.saved) == 1
 
 
-def test_option_alone_does_nothing(rig):
-    rig.option(True)
-    rig.option(False, after=2.0)
-
-    assert main.state == "idle"
-    assert rig.overlay.shown == []
-
-
 def test_an_option_command_shortcut_does_not_start_dictation(rig):
     """Right Option + Command + a letter is a shortcut, not a request."""
-    rig.option(True)
-    rig.press(after=0.03)
+    rig.press("opt")
+    rig.press("cmd", after=0.03)
     rig.type_key(after=0.05)
-    rig.release(after=0.05)
-    rig.option(False, after=0.02)
+    rig.release("cmd", after=0.05)
+    rig.release("opt", after=0.02)
 
     assert main.state == "idle"
     assert rig.saved == []
 
 
-def test_right_command_used_as_a_shortcut_does_not_stop_it(rig):
+@pytest.mark.parametrize("key", ["cmd", "opt"])
+def test_either_key_used_as_a_shortcut_does_not_stop_it(rig, key):
     rig.combo()
 
-    rig.press(after=5.0)
+    rig.press(key, after=5.0)
     rig.type_key(after=0.05)
-    rig.release(after=0.05)
+    rig.release(key, after=0.05)
 
     assert main.state == "recording"
     assert rig.saved == []
 
-    rig.tap(after=5.0)
+    rig.tap(key, after=5.0)
     assert main.state == "processing"
     assert len(rig.saved) == 1
 
@@ -222,23 +222,26 @@ def test_a_plain_hold_after_hands_free_is_not_hands_free(rig):
     rig.tap(after=5.0)
     main._claim_job_completion(main.current_job_id)
 
-    rig.press(after=1.0)
+    rig.press("opt", after=1.0)
     assert main.current_hands_free is False
-    rig.release(after=2.0)
+    rig.release("opt", after=2.0)
     assert main.state == "processing"
 
 
 @pytest.mark.parametrize("keycode, flags, expected", [
     (0x36, 0x10, ("down", 0x36, "dictate", False)),
+    (0x3D, 0x40, ("down", 0x3D, "dictate", False)),
     (0x36, 0x10 | 0x40, ("down", 0x36, "dictate", True)),
+    (0x3D, 0x40 | 0x10, ("down", 0x3D, "dictate", True)),
     (0x3C, 0x04, ("down", 0x3C, "translate", False)),
 ])
 def test_the_keyboard_map(monkeypatch, keycode, flags, expected):
-    """Right Shift is English; right Option only means hands-free."""
+    """Right ⌘ and right ⌥ both dictate; right ⇧ is English."""
     calls = []
     monkeypatch.setattr(main, "CGEventGetIntegerValueField", lambda e, f: keycode)
     monkeypatch.setattr(main, "CGEventGetFlags", lambda e: flags)
     monkeypatch.setattr(main, "_hands_free_recording", lambda: False)
+    monkeypatch.setattr(main, "_latch_hands_free", lambda k: False)
     monkeypatch.setattr(
         main,
         "on_key_down",
@@ -250,13 +253,10 @@ def test_the_keyboard_map(monkeypatch, keycode, flags, expected):
     assert calls == [expected]
 
 
-def test_right_option_alone_no_longer_translates(monkeypatch):
-    calls = []
-    monkeypatch.setattr(main, "CGEventGetIntegerValueField", lambda e, f: 0x3D)
-    monkeypatch.setattr(main, "CGEventGetFlags", lambda e: 0x40)
-    monkeypatch.setattr(main, "on_key_down", lambda *a, **k: calls.append(a))
-    monkeypatch.setattr(main, "state", "idle")
+def test_a_lost_release_of_the_same_key_does_not_go_hands_free(rig):
+    """macOS can drop a key-up; the next press of that key is not a combo."""
+    rig.press("cmd")
+    rig.held.clear()
+    rig.press("cmd", after=2.0)
 
-    main.tap_callback(None, main.kCGEventFlagsChanged, object(), None)
-
-    assert calls == []
+    assert main.current_hands_free is False
